@@ -35,8 +35,8 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_textured_material | Create an image-textured material, connect file and place2dTexture nodes, and optionally assign it to UV-mapped objects. |
 | create_textured_label | Create a UV-mapped curved label mesh around a bottle or cylindrical object and apply an image texture directly through UVs. |
 | create_curved_text | Create text curves, raised tube geometry, or filled polygon text conformed to cylindrical surfaces. |
-| create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles for bottles, cups, vases, and similar forms. |
-| create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles for thick-wall bottles, cups, shades, and vessels. |
+| create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles, with optional smooth profile resampling. |
+| create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles, with optional smooth profile resampling. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
 | uv_operations | List, create, switch, project, normalize, and lay out UV sets for polygon meshes. |
