@@ -36,6 +36,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_pbr_material | Create generic physically-oriented materials with glass, liquid, metal, plastic, rubber, and ceramic presets. |
 | create_textured_material | Create an image-textured material, connect file and place2dTexture nodes, and optionally assign it to UV-mapped objects. |
 | extract_image_region_texture | Crop, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, or trim. |
+| extract_image_matte_texture | Extract cropped textures with alpha mattes derived from color, hue, foreground, or alpha image regions. |
 | extract_image_detail_mask | Extract dark, bright, absolute-contrast, or edge detail masks from reference images for texture cleanup or geometry relief. |
 | create_textured_label | Create a UV-mapped curved label mesh around a cylindrical or profiled lathed object and apply an image texture directly through UVs, with optional alpha. |
 | create_curved_text | Create text curves, raised tube geometry, or filled polygon text conformed to cylindrical surfaces. |
