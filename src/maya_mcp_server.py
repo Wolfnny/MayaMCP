@@ -50,9 +50,19 @@ _operation_manager = None
 class MayaConnection:
     """ connection to the Maya instance """
 
-    def __init__(self, host:str=LOCAL_HOST, port:int=DEFAULT_COMMAND_PORT):
+    def __init__(self, host:str=None, port:int=None, source_type:str=None):
+        if host is None:
+            host = os.environ.get("MAYA_MCP_COMMAND_HOST", LOCAL_HOST)
+        if port is None:
+            port = int(os.environ.get("MAYA_MCP_COMMAND_PORT", DEFAULT_COMMAND_PORT))
+        if source_type is None:
+            source_type = os.environ.get("MAYA_MCP_COMMAND_SOURCE_TYPE", "mel")
+        source_type = source_type.lower().strip()
+        if source_type not in {"mel", "python"}:
+            raise ValueError("MAYA_MCP_COMMAND_SOURCE_TYPE must be mel or python.")
         self.host = host
         self.port = port
+        self.source_type = source_type
 
     @staticmethod
     def _encode_python_to_mel_python(python_code:str) -> str:
@@ -77,9 +87,13 @@ _mcp_maya_results = _mcp_io_buf.getvalue()
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect((self.host, self.port))
 
-        mel = MayaConnection._encode_python_to_mel_python(python_script)
+        if self.source_type == "python":
+            command = python_script
+        else:
+            command = MayaConnection._encode_python_to_mel_python(python_script)
 
-        client.send(mel.encode('utf-8'))
+        client.sendall(command.encode('utf-8'))
+        client.shutdown(socket.SHUT_WR)
 
         result = data = client.recv(1024)
         while len(data) == 1024:

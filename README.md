@@ -115,6 +115,24 @@ When the Maya MCP server first attempts to communicate with Maya, you will get t
 
 ![](docs/MayaSecurityWarning-RunScript.jpg)
 
+If the default command port is blocked by Maya security settings, open a
+dedicated Python command port in Maya and point the MCP server at it:
+
+```mel
+commandPort -name ":50009" -sourceType "python" -bufferSize 4096 -outputVar "_mcp_maya_results";
+```
+
+Then set these environment variables for the MCP server process:
+
+```json
+{
+  "env": {
+    "MAYA_MCP_COMMAND_PORT": "50009",
+    "MAYA_MCP_COMMAND_SOURCE_TYPE": "python"
+  }
+}
+```
+
 
 ## Developer Notes
 
