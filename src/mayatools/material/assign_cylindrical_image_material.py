@@ -10,6 +10,7 @@ def assign_cylindrical_image_material(
     axis: str = "y",
     axis_range: List[float] = None,
     angle_range_degrees: List[float] = [-60.0, 60.0],
+    outside_axis_mode: str = "extend",
     outside_angle_mode: str = "ignore",
     sample_channel: str = "alpha",
     threshold: float = 0.05,
@@ -35,6 +36,10 @@ def assign_cylindrical_image_material(
     panels, surface markings, trim masks, partial wraps, and photo-to-surface
     workflows on bottles, cans, tubes, cups, and other near-lathed meshes
     without relying on separate floating cards.
+
+    outside_axis_mode controls how samples beyond axis_range are handled:
+    "extend" preserves unclamped coordinates, "clamp" pins them to the nearest
+    edge, and "ignore" excludes out-of-range faces from material assignment.
     """
     import math
     import os
@@ -96,6 +101,16 @@ def assign_cylindrical_image_material(
             distance_to_end = abs(delta - span_degrees)
             return 0.0 if distance_to_start < distance_to_end else 1.0
         return delta / span_degrees
+
+    def _axis_t(local_axis, axis_start, axis_span):
+        value = (local_axis - axis_start) / axis_span
+        if 0.0 <= value <= 1.0:
+            return value
+        if outside_axis_mode == "ignore":
+            return None
+        if outside_axis_mode == "clamp":
+            return _clamp(value)
+        return value
 
     def _shape_dag_path(node_name):
         selection = om.MSelectionList()
@@ -220,7 +235,9 @@ def assign_cylindrical_image_material(
         u = _angle_t(angle_degrees, angle_start, angle_span)
         if u is None:
             return None
-        v = (local_axis - axis_start) / axis_span
+        v = _axis_t(local_axis, axis_start, axis_span)
+        if v is None:
+            return None
         if flip_u:
             u = 1.0 - u
         if flip_v:
@@ -302,6 +319,9 @@ def assign_cylindrical_image_material(
     outside_angle_mode = outside_angle_mode.lower().strip()
     if outside_angle_mode not in {"ignore", "wrap", "clamp", "extend"}:
         raise ValueError("outside_angle_mode must be ignore, wrap, clamp, or extend.")
+    outside_axis_mode = outside_axis_mode.lower().strip()
+    if outside_axis_mode not in {"ignore", "clamp", "extend"}:
+        raise ValueError("outside_axis_mode must be ignore, clamp, or extend.")
     sample_channel = sample_channel.lower().strip()
     if sample_channel not in {"alpha", "luminance", "red", "green", "blue", "value", "saturation"}:
         raise ValueError("sample_channel must be one of alpha, luminance, red, green, blue, value, or saturation.")
@@ -451,6 +471,7 @@ def assign_cylindrical_image_material(
         "axis_range": [axis_start, axis_end],
         "angle_range_degrees": angle_range_degrees,
         "angle_span_degrees": angle_span,
+        "outside_axis_mode": outside_axis_mode,
         "outside_angle_mode": outside_angle_mode,
         "sample_channel": sample_channel,
         "threshold": threshold,
