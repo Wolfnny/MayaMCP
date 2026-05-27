@@ -18,6 +18,7 @@ def create_textured_label(
     offset: float = 0.02,
     material_name: str = None,
     use_alpha: bool = False,
+    opacity: float = 1.0,
 ) -> Dict[str, Any]:
     """Create a UV-mapped curved label mesh and apply an image texture to it.
 
@@ -26,7 +27,9 @@ def create_textured_label(
     instead of being approximated with floating text geometry. If surface_profile
     is provided as [height, radius] points, the label conforms to that lathed
     profile instead of using a constant cylindrical radius. When use_alpha is
-    true, texture transparency is connected to the label material.
+    true, texture transparency is connected to the label material. Opacity
+    controls the overall material visibility and is multiplied with texture
+    alpha when use_alpha is enabled.
     """
     import math
     import os
@@ -45,6 +48,11 @@ def create_textured_label(
         if not isinstance(values, list) or len(values) != length or not all(_is_number(v) for v in values):
             raise ValueError(f"{arg_name} must be a list of {length} numeric values.")
         return [float(v) for v in values]
+
+    def _validate_scalar(value, arg_name):
+        if not _is_number(value):
+            raise ValueError(f"{arg_name} must be numeric.")
+        return float(value)
 
     def _validate_profile(profile, arg_name):
         if profile is None:
@@ -117,6 +125,9 @@ def create_textured_label(
         raise ValueError("height must be greater than zero.")
     if segments_u < 3 or segments_v < 1:
         raise ValueError("segments_u must be >= 3 and segments_v must be >= 1.")
+    opacity = _validate_scalar(opacity, "opacity")
+    if opacity < 0.0 or opacity > 1.0:
+        raise ValueError("opacity must be in the 0..1 range.")
     if angle_end <= angle_start:
         raise ValueError("angle_end must be greater than angle_start.")
     if not isinstance(profile_interpolation, str):
@@ -213,12 +224,19 @@ def create_textured_label(
 
     cmds.setAttr(f"{file_node}.fileTextureName", normalized_texture_path, type="string")
     cmds.connectAttr(f"{file_node}.outColor", f"{shader}.color", force=True)
+    if cmds.attributeQuery("transparency", node=shader, exists=True):
+        cmds.setAttr(f"{shader}.transparency", 1.0 - opacity, 1.0 - opacity, 1.0 - opacity, type="double3")
     alpha_node = None
+    alpha_opacity_node = None
     if use_alpha and cmds.attributeQuery("transparency", node=shader, exists=True):
         if cmds.attributeQuery("outAlpha", node=file_node, exists=True):
+            alpha_opacity_node = cmds.shadingNode("multiplyDivide", asUtility=True, name=f"{material_name}_alpha_opacity")
+            cmds.setAttr(f"{alpha_opacity_node}.input2", opacity, opacity, opacity, type="double3")
+            for channel in ["X", "Y", "Z"]:
+                cmds.connectAttr(f"{file_node}.outAlpha", f"{alpha_opacity_node}.input1{channel}", force=True)
             alpha_node = cmds.shadingNode("reverse", asUtility=True, name=f"{material_name}_alpha_reverse")
             for channel in ["X", "Y", "Z"]:
-                cmds.connectAttr(f"{file_node}.outAlpha", f"{alpha_node}.input{channel}", force=True)
+                cmds.connectAttr(f"{alpha_opacity_node}.output{channel}", f"{alpha_node}.input{channel}", force=True)
             cmds.connectAttr(f"{alpha_node}.output", f"{shader}.transparency", force=True)
         elif cmds.attributeQuery("outTransparency", node=file_node, exists=True):
             cmds.connectAttr(f"{file_node}.outTransparency", f"{shader}.transparency", force=True)
@@ -233,6 +251,7 @@ def create_textured_label(
         "file_node": file_node,
         "place2d": place2d,
         "alpha_node": alpha_node,
+        "alpha_opacity_node": alpha_opacity_node,
         "shading_group": shading_group,
         "texture_path": normalized_texture_path,
         "radius": radius,
@@ -243,4 +262,5 @@ def create_textured_label(
         "segments_u": segments_u,
         "segments_v": segments_v,
         "use_alpha": bool(use_alpha),
+        "opacity": opacity,
     }
