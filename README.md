@@ -45,6 +45,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | extract_image_color_regions | Extract connected color or foreground regions from an image reference and report normalized and product-height-space bounds. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
+| cylindrical_image_deform | Deform a cylindrical or lathed mesh from an image sampled in angle/height space for photo-driven relief or emboss/deboss details. |
 | polar_mesh_deform | Apply coupled angular radial and axial deformation for petal bases, star supports, lobed feet, or cyclic punt details. |
 | localized_radial_pattern_deform | Apply localized repeated dimples, raised dots, or embossed/debossed radial features to cylindrical meshes. |
 | uv_operations | List, create, switch, project, normalize, and lay out UV sets for polygon meshes. |
