@@ -24,6 +24,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | scene_save | Save the current scene. If the filename is not specified, it will save it as its current name. |
 | select_object | Select an object in the scene. |
 | setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image. |
+| create_reference_image_plane | Create a textured world-space reference image plane fitted to target objects for silhouette, proportion, or layout comparison. |
 
 ## Advanced Modeling Tools
 
