@@ -38,7 +38,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | extract_image_region_texture | Crop, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, or trim. |
 | extract_image_matte_texture | Extract cropped textures with alpha mattes derived from color, hue, foreground, or alpha image regions. |
 | extract_image_detail_mask | Extract dark, bright, absolute-contrast, or edge detail masks from reference images for texture cleanup or geometry relief. |
-| extract_image_contours | Extract image-mask component contours and optionally create planar or cylindrical Maya curves. |
+| extract_image_contours | Extract traced and filtered image-mask contours and optionally create planar or cylindrical Maya curves. |
 | create_textured_label | Create a UV-mapped curved label mesh around a cylindrical or profiled lathed object and apply an image texture directly through UVs, with optional alpha. |
 | create_curved_text | Create text curves, raised tube geometry, or filled polygon text conformed to cylindrical surfaces. |
 | create_tube_mesh_from_curves | Create polygon tube geometry along curves or point paths for trim, seams, strokes, wires, pipes, or raised outlines. |

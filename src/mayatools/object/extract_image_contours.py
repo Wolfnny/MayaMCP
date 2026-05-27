@@ -23,6 +23,12 @@ def extract_image_contours(
     simplify_tolerance_pixels: float = 1.5,
     max_points_per_contour: int = 160,
     close_contours: bool = True,
+    contour_ordering: str = "trace",
+    min_boundary_points: int = 0,
+    min_bbox_width_pixels: int = 0,
+    min_bbox_height_pixels: int = 0,
+    max_bbox_width_pixels: int = 0,
+    max_bbox_height_pixels: int = 0,
     create_curves: bool = False,
     curve_name_prefix: str = None,
     curve_mapping: str = "image_plane",
@@ -42,12 +48,14 @@ def extract_image_contours(
 
     The image region can be segmented by luminance, alpha, RGB color, hue, or
     foreground-vs-background. Connected components are reduced to boundary
-    contours, simplified, and returned in crop-local pixel and normalized
-    coordinates. When requested, contours can be instantiated as generic Maya
-    curves on an image plane or mapped around a cylindrical/lathed surface.
+    contours, simplified, filtered, and returned in crop-local pixel and
+    normalized coordinates. When requested, contours can be instantiated as
+    generic Maya curves on an image plane or mapped around a
+    cylindrical/lathed surface.
     This is useful for decals, relief outlines, molded marks, panel seams,
     engravings, vents, patches, and other reference-derived curve details.
     """
+    from collections import defaultdict
     import math
     import os
     import maya.cmds as cmds
@@ -183,6 +191,123 @@ def extract_image_contours(
             return points[:1]
         return [points[int(round(index * (len(points) - 1) / float(max_points - 1)))] for index in range(max_points)]
 
+    def _point_distance(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def _simplify_ordered_points(points, epsilon, is_closed):
+        if len(points) <= 2 or epsilon <= 0.0:
+            return points[:]
+        if not is_closed or len(points) <= 4:
+            return _rdp(points, epsilon)
+
+        anchor_index = max(range(1, len(points)), key=lambda index: _point_distance(points[0], points[index]))
+        first_half = points[: anchor_index + 1]
+        second_half = points[anchor_index:] + [points[0]]
+        simplified_first = _rdp(first_half, epsilon)
+        simplified_second = _rdp(second_half, epsilon)
+        return simplified_first[:-1] + simplified_second[:-1]
+
+    def _component_boundary_points(pixel_set):
+        boundary_points = []
+        for x, y in pixel_set:
+            for dx, dy in _boundary_neighbors():
+                if (x + dx, y + dy) not in pixel_set:
+                    boundary_points.append((float(x), float(y)))
+                    break
+        return boundary_points
+
+    def _sort_boundary_by_angle(boundary):
+        centroid_x = sum(point[0] for point in boundary) / float(len(boundary))
+        centroid_y = sum(point[1] for point in boundary) / float(len(boundary))
+        return sorted(boundary, key=lambda point: math.atan2(point[1] - centroid_y, point[0] - centroid_x))
+
+    def _vertex_to_pixel_point(vertex):
+        x, y = vertex
+        return (
+            max(0.0, min(float(crop_width - 1), float(x) - 0.5)),
+            max(0.0, min(float(crop_height - 1), float(y) - 0.5)),
+        )
+
+    def _add_boundary_edge(edges, start, end):
+        edges.append((start, end))
+
+    def _boundary_edges_from_pixels(pixel_set):
+        edges = []
+        for x, y in pixel_set:
+            if (x, y - 1) not in pixel_set:
+                _add_boundary_edge(edges, (x, y), (x + 1, y))
+            if (x + 1, y) not in pixel_set:
+                _add_boundary_edge(edges, (x + 1, y), (x + 1, y + 1))
+            if (x, y + 1) not in pixel_set:
+                _add_boundary_edge(edges, (x + 1, y + 1), (x, y + 1))
+            if (x - 1, y) not in pixel_set:
+                _add_boundary_edge(edges, (x, y + 1), (x, y))
+        return edges
+
+    def _edge_key(edge):
+        return (edge[0][1], edge[0][0], edge[1][1], edge[1][0])
+
+    def _choose_next_edge(previous_vertex, current_vertex, candidate_edges):
+        prev_dx = current_vertex[0] - previous_vertex[0]
+        prev_dy = current_vertex[1] - previous_vertex[1]
+
+        def _score(edge):
+            next_vertex = edge[1]
+            next_dx = next_vertex[0] - current_vertex[0]
+            next_dy = next_vertex[1] - current_vertex[1]
+            dot = prev_dx * next_dx + prev_dy * next_dy
+            cross = prev_dx * next_dy - prev_dy * next_dx
+            turn_rank = 0 if cross > 0 else 1 if dot > 0 else 2 if cross == 0 else 3
+            return (turn_rank, -dot, _edge_key(edge))
+
+        return min(candidate_edges, key=_score)
+
+    def _trace_boundary_chains(pixel_set):
+        edges = _boundary_edges_from_pixels(pixel_set)
+        edges_by_start = defaultdict(list)
+        for edge in edges:
+            edges_by_start[edge[0]].append(edge)
+        for start in edges_by_start:
+            edges_by_start[start].sort(key=_edge_key)
+
+        unused_edges = set(edges)
+        chains = []
+        while unused_edges:
+            start_edge = min(unused_edges, key=_edge_key)
+            unused_edges.remove(start_edge)
+            chain_vertices = [start_edge[0], start_edge[1]]
+            previous_vertex, current_vertex = start_edge
+            is_closed = False
+
+            while current_vertex != chain_vertices[0]:
+                candidates = [edge for edge in edges_by_start.get(current_vertex, []) if edge in unused_edges]
+                if not candidates:
+                    break
+                next_edge = _choose_next_edge(previous_vertex, current_vertex, candidates)
+                unused_edges.remove(next_edge)
+                previous_vertex, current_vertex = next_edge
+                chain_vertices.append(current_vertex)
+
+            if current_vertex == chain_vertices[0]:
+                is_closed = True
+
+            points = []
+            for vertex in chain_vertices:
+                point = _vertex_to_pixel_point(vertex)
+                if not points or points[-1] != point:
+                    points.append(point)
+            if is_closed and points and points[0] != points[-1]:
+                points.append(points[0])
+            chains.append({"points": points, "is_closed": is_closed})
+
+        chains.sort(key=lambda item: len(item["points"]), reverse=True)
+        return chains
+
+    def _contour_bbox(points):
+        x_values = [point[0] for point in points]
+        y_values = [point[1] for point in points]
+        return [min(x_values), min(y_values), max(x_values), max(y_values)]
+
     def _profile_radius_at(profile, height, interpolation):
         if height <= profile[0][0]:
             return profile[0][1]
@@ -276,9 +401,21 @@ def extract_image_contours(
     max_components = _validate_int(max_components, "max_components", 1)
     min_contour_points = _validate_int(min_contour_points, "min_contour_points", 2)
     max_points_per_contour = _validate_int(max_points_per_contour, "max_points_per_contour", 0)
+    min_boundary_points = _validate_int(min_boundary_points, "min_boundary_points", 0)
+    min_bbox_width_pixels = _validate_int(min_bbox_width_pixels, "min_bbox_width_pixels", 0)
+    min_bbox_height_pixels = _validate_int(min_bbox_height_pixels, "min_bbox_height_pixels", 0)
+    max_bbox_width_pixels = _validate_int(max_bbox_width_pixels, "max_bbox_width_pixels", 0)
+    max_bbox_height_pixels = _validate_int(max_bbox_height_pixels, "max_bbox_height_pixels", 0)
+    if max_bbox_width_pixels > 0 and min_bbox_width_pixels > max_bbox_width_pixels:
+        raise ValueError("min_bbox_width_pixels cannot be greater than max_bbox_width_pixels.")
+    if max_bbox_height_pixels > 0 and min_bbox_height_pixels > max_bbox_height_pixels:
+        raise ValueError("min_bbox_height_pixels cannot be greater than max_bbox_height_pixels.")
     simplify_tolerance_pixels = _validate_scalar(simplify_tolerance_pixels, "simplify_tolerance_pixels")
     if simplify_tolerance_pixels < 0.0:
         raise ValueError("simplify_tolerance_pixels must be greater than or equal to zero.")
+    contour_ordering = contour_ordering.lower().strip()
+    if contour_ordering not in {"trace", "angle"}:
+        raise ValueError("contour_ordering must be one of trace or angle.")
     threshold = _clamp(_validate_scalar(threshold, "threshold"))
     alpha_threshold = _clamp(_validate_scalar(alpha_threshold, "alpha_threshold"))
     saturation_min = _clamp(_validate_scalar(saturation_min, "saturation_min"))
@@ -430,6 +567,7 @@ def extract_image_contours(
 
     visited = [bytearray(crop_width) for _ in range(crop_height)]
     components = []
+    raw_component_count = 0
     for y in range(crop_height):
         for x in range(crop_width):
             if not mask[y][x] or visited[y][x]:
@@ -456,47 +594,69 @@ def extract_image_contours(
                     visited[next_y][next_x] = 1
                     stack.append((next_x, next_y))
             if len(pixels) >= min_component_pixels:
-                components.append({"pixels": pixels, "bbox_pixels": [x0, y0, x1, y1], "pixel_count": len(pixels)})
+                raw_component_count += 1
+                bbox_width = x1 - x0 + 1
+                bbox_height = y1 - y0 + 1
+                if bbox_width < min_bbox_width_pixels or bbox_height < min_bbox_height_pixels:
+                    continue
+                if max_bbox_width_pixels > 0 and bbox_width > max_bbox_width_pixels:
+                    continue
+                if max_bbox_height_pixels > 0 and bbox_height > max_bbox_height_pixels:
+                    continue
+                components.append({
+                    "pixels": pixels,
+                    "bbox_pixels": [x0, y0, x1, y1],
+                    "bbox_size_pixels": [bbox_width, bbox_height],
+                    "pixel_count": len(pixels),
+                })
     components.sort(key=lambda item: item["pixel_count"], reverse=True)
 
     contours = []
     for component_index, component in enumerate(components[:max_components]):
-        boundary = []
         pixel_set = set(component["pixels"])
-        for x, y in component["pixels"]:
-            is_boundary = False
-            for dx, dy in _boundary_neighbors():
-                nx = x + dx
-                ny = y + dy
-                if nx < 0 or nx >= crop_width or ny < 0 or ny >= crop_height or (nx, ny) not in pixel_set:
-                    is_boundary = True
-                    break
-            if is_boundary:
-                boundary.append((float(x), float(y)))
-        if len(boundary) < min_contour_points:
+        boundary = _component_boundary_points(pixel_set)
+        if len(boundary) < min_contour_points or len(boundary) < min_boundary_points:
             continue
-        centroid_x = sum(point[0] for point in boundary) / float(len(boundary))
-        centroid_y = sum(point[1] for point in boundary) / float(len(boundary))
-        boundary.sort(key=lambda point: math.atan2(point[1] - centroid_y, point[0] - centroid_x))
-        simplified = _rdp(boundary, simplify_tolerance_pixels)
-        simplified = _resample_points(simplified, max_points_per_contour)
-        if close_contours and simplified and simplified[0] != simplified[-1]:
-            simplified.append(simplified[0])
-        normalized = [
-            [
-                0.0 if crop_width == 1 else point[0] / float(crop_width - 1),
-                0.0 if crop_height == 1 else point[1] / float(crop_height - 1),
+
+        if contour_ordering == "angle":
+            raw_chains = [{"points": _sort_boundary_by_angle(boundary), "is_closed": True}]
+        else:
+            raw_chains = _trace_boundary_chains(pixel_set)
+
+        for chain_index, chain in enumerate(raw_chains):
+            raw_points = chain["points"]
+            if len(raw_points) < min_contour_points:
+                continue
+            is_closed = bool(chain["is_closed"])
+            working_points = raw_points[:-1] if is_closed and raw_points[0] == raw_points[-1] else raw_points[:]
+            if len(working_points) < min_contour_points:
+                continue
+            simplified = _simplify_ordered_points(working_points, simplify_tolerance_pixels, is_closed)
+            simplified = _resample_points(simplified, max_points_per_contour)
+            should_close = close_contours and (is_closed or contour_ordering == "angle")
+            if should_close and simplified and simplified[0] != simplified[-1]:
+                simplified.append(simplified[0])
+            normalized = [
+                [
+                    0.0 if crop_width == 1 else point[0] / float(crop_width - 1),
+                    0.0 if crop_height == 1 else point[1] / float(crop_height - 1),
+                ]
+                for point in simplified
             ]
-            for point in simplified
-        ]
-        contours.append({
-            "component_index": component_index,
-            "pixel_count": component["pixel_count"],
-            "bbox_pixels": component["bbox_pixels"],
-            "point_count": len(simplified),
-            "points_pixels": [[point[0], point[1]] for point in simplified],
-            "points_normalized": normalized,
-        })
+            contours.append({
+                "component_index": component_index,
+                "chain_index": chain_index,
+                "pixel_count": component["pixel_count"],
+                "boundary_point_count": len(boundary),
+                "raw_chain_point_count": len(raw_points),
+                "bbox_pixels": component["bbox_pixels"],
+                "bbox_size_pixels": component["bbox_size_pixels"],
+                "contour_bbox_pixels": _contour_bbox(simplified),
+                "is_closed": is_closed,
+                "point_count": len(simplified),
+                "points_pixels": [[point[0], point[1]] for point in simplified],
+                "points_normalized": normalized,
+            })
 
     created_curves = []
     if create_curves:
@@ -511,7 +671,7 @@ def extract_image_contours(
             if len(world_points) < 2:
                 continue
             curve = cmds.curve(
-                name=f"{curve_name_prefix}_{contour['component_index']:02d}",
+                name=f"{curve_name_prefix}_{contour['component_index']:02d}_{contour['chain_index']:02d}",
                 degree=1,
                 point=world_points,
             )
@@ -527,7 +687,9 @@ def extract_image_contours(
         "crop_height": crop_height,
         "match_mode": match_mode,
         "matched_pixels": matched_pixels,
+        "raw_component_count": raw_component_count,
         "component_count": len(components),
+        "contour_ordering": contour_ordering,
         "contour_count": len(contours),
         "contours": contours,
         "create_curves": bool(create_curves),
