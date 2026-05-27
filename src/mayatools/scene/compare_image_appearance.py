@@ -20,6 +20,8 @@ def compare_image_appearance(
     compare_height: int = 512,
     min_compare_pixels: int = 16,
     band_edges_normalized: List[float] = None,
+    grid_rows: int = 0,
+    grid_columns: int = 0,
 ) -> Dict[str, Any]:
     """Compare aligned image appearance with color-error metrics.
 
@@ -27,8 +29,9 @@ def compare_image_appearance(
     product previews, and reference-matching workflows. It crops reference and
     candidate images, stretches both crops to a shared comparison size, builds
     optional alpha/foreground masks, computes RGB and luminance error metrics,
-    optionally summarizes errors by vertical bands, and can write a three-panel
-    diagnostic image: reference, candidate, and heatmapped absolute difference.
+    optionally summarizes errors by vertical bands or a 2D grid, and can write
+    a three-panel diagnostic image: reference, candidate, and heatmapped
+    absolute difference.
     """
     import math
     import os
@@ -284,6 +287,12 @@ def compare_image_appearance(
     compare_width = _validate_int(compare_width, "compare_width", 8)
     compare_height = _validate_int(compare_height, "compare_height", 8)
     min_compare_pixels = _validate_int(min_compare_pixels, "min_compare_pixels", 1)
+    if not isinstance(grid_rows, int) or isinstance(grid_rows, bool) or grid_rows < 0:
+        raise ValueError("grid_rows must be an integer greater than or equal to zero.")
+    if not isinstance(grid_columns, int) or isinstance(grid_columns, bool) or grid_columns < 0:
+        raise ValueError("grid_columns must be an integer greater than or equal to zero.")
+    if (grid_rows == 0) != (grid_columns == 0):
+        raise ValueError("grid_rows and grid_columns must both be zero or both be greater than zero.")
     background_tolerance = _validate_scalar(background_tolerance, "background_tolerance")
     alpha_threshold = _validate_scalar(alpha_threshold, "alpha_threshold")
     if background_tolerance < 0.0:
@@ -350,6 +359,12 @@ def compare_image_appearance(
     if band_edges:
         for band_index in range(len(band_edges) - 1):
             band_stats.append(_new_stats())
+    grid_stats = []
+    if grid_rows and grid_columns:
+        for row in range(grid_rows):
+            grid_stats.append([])
+            for column in range(grid_columns):
+                grid_stats[row].append(_new_stats())
 
     diff_image = None
     if output_path:
@@ -393,6 +408,10 @@ def compare_image_appearance(
                     if band_edges[band_index] <= y_normalized <= band_edges[band_index + 1]:
                         _update_stats(band_stats[band_index], rgb_delta, luma_delta)
                         break
+            if grid_stats:
+                grid_row = min(grid_rows - 1, int((y / float(compare_height)) * grid_rows))
+                grid_column = min(grid_columns - 1, int((x / float(compare_width)) * grid_columns))
+                _update_stats(grid_stats[grid_row][grid_column], rgb_delta, luma_delta)
             if diff_image is not None:
                 diff_image.setPixelColor(x + compare_width * 2, y, _heat_color(pixel_abs_sum / 3.0))
 
@@ -422,6 +441,18 @@ def compare_image_appearance(
                 "y_min_normalized": band_edges[band_index],
                 "y_max_normalized": band_edges[band_index + 1],
             }))
+    grid_appearance_metrics = []
+    if grid_stats:
+        for row in range(grid_rows):
+            for column in range(grid_columns):
+                grid_appearance_metrics.append(_finalize_stats(grid_stats[row][column], {
+                    "row": row,
+                    "column": column,
+                    "x_min_normalized": column / float(grid_columns),
+                    "x_max_normalized": (column + 1) / float(grid_columns),
+                    "y_min_normalized": row / float(grid_rows),
+                    "y_max_normalized": (row + 1) / float(grid_rows),
+                }))
 
     return {
         "success": True,
@@ -433,6 +464,8 @@ def compare_image_appearance(
         "compare_width": compare_width,
         "compare_height": compare_height,
         "band_edges_normalized": band_edges,
+        "grid_rows": grid_rows,
+        "grid_columns": grid_columns,
         "mask_mode": mask_mode,
         "comparison_mask_mode": comparison_mask_mode,
         "reference_background_color": reference_background,
@@ -453,4 +486,5 @@ def compare_image_appearance(
         "mean_abs_luminance_error": luminance_abs * inv_count,
         "luminance_rmse": math.sqrt(luminance_squared * inv_count),
         "band_appearance_metrics": band_appearance_metrics,
+        "grid_appearance_metrics": grid_appearance_metrics,
     }
