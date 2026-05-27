@@ -22,6 +22,9 @@ def compare_image_appearance(
     band_edges_normalized: List[float] = None,
     grid_rows: int = 0,
     grid_columns: int = 0,
+    auto_crop_reference: bool = False,
+    auto_crop_candidate: bool = False,
+    auto_crop_padding_pixels: int = 0,
 ) -> Dict[str, Any]:
     """Compare aligned image appearance with color-error metrics.
 
@@ -31,7 +34,8 @@ def compare_image_appearance(
     optional alpha/foreground masks, computes RGB and luminance error metrics,
     optionally summarizes errors by vertical bands or a 2D grid, and can write
     a three-panel diagnostic image: reference, candidate, and heatmapped
-    absolute difference.
+    absolute difference. Optional foreground auto-cropping is useful when
+    renders are centered on a larger product-preview canvas.
     """
     import math
     import os
@@ -177,6 +181,35 @@ def compare_image_appearance(
             mask.append(row)
         return mask, count
 
+    def _auto_crop_bbox(image, bg_color, padding_pixels, image_arg):
+        width = image.width()
+        height = image.height()
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+        foreground_pixels = 0
+        for y in range(height):
+            for x in range(width):
+                red, green, blue, alpha = _pixel_rgb_alpha(image, x, y)
+                if alpha >= alpha_threshold and _color_distance((red, green, blue), bg_color) > background_tolerance:
+                    min_x = min(min_x, x)
+                    min_y = min(min_y, y)
+                    max_x = max(max_x, x)
+                    max_y = max(max_y, y)
+                    foreground_pixels += 1
+        if foreground_pixels < min_compare_pixels:
+            raise ValueError(
+                f"Unable to auto-crop {image_arg}: not enough foreground pixels. "
+                "Adjust background colors, tolerances, alpha threshold, or provide an explicit bbox."
+            )
+        return [
+            max(0, min_x - padding_pixels),
+            max(0, min_y - padding_pixels),
+            min(width - 1, max_x + padding_pixels),
+            min(height - 1, max_y + padding_pixels),
+        ]
+
     def _combine_masks(reference_mask, candidate_mask):
         combined = []
         count = 0
@@ -287,6 +320,11 @@ def compare_image_appearance(
     compare_width = _validate_int(compare_width, "compare_width", 8)
     compare_height = _validate_int(compare_height, "compare_height", 8)
     min_compare_pixels = _validate_int(min_compare_pixels, "min_compare_pixels", 1)
+    auto_crop_padding_pixels = _validate_int(auto_crop_padding_pixels, "auto_crop_padding_pixels", 0)
+    if not isinstance(auto_crop_reference, bool):
+        raise ValueError("auto_crop_reference must be a boolean.")
+    if not isinstance(auto_crop_candidate, bool):
+        raise ValueError("auto_crop_candidate must be a boolean.")
     if not isinstance(grid_rows, int) or isinstance(grid_rows, bool) or grid_rows < 0:
         raise ValueError("grid_rows must be an integer greater than or equal to zero.")
     if not isinstance(grid_columns, int) or isinstance(grid_columns, bool) or grid_columns < 0:
@@ -312,20 +350,30 @@ def compare_image_appearance(
     reference_background = _normalize_color(reference_background_color, "reference_background_color") or shared_background
     candidate_background = _normalize_color(candidate_background_color, "candidate_background_color") or shared_background
 
-    reference_bbox = _bbox_from_args(
-        reference_image,
-        reference_bbox_pixels,
-        reference_bbox_normalized,
-        "reference_bbox_pixels",
-        "reference_bbox_normalized",
-    )
-    candidate_bbox = _bbox_from_args(
-        candidate_image,
-        candidate_bbox_pixels,
-        candidate_bbox_normalized,
-        "candidate_bbox_pixels",
-        "candidate_bbox_normalized",
-    )
+    if auto_crop_reference and reference_bbox_pixels is None and reference_bbox_normalized is None:
+        if reference_background is None:
+            reference_background = _estimate_background(reference_image)
+        reference_bbox = _auto_crop_bbox(reference_image, reference_background, auto_crop_padding_pixels, "reference_image_path")
+    else:
+        reference_bbox = _bbox_from_args(
+            reference_image,
+            reference_bbox_pixels,
+            reference_bbox_normalized,
+            "reference_bbox_pixels",
+            "reference_bbox_normalized",
+        )
+    if auto_crop_candidate and candidate_bbox_pixels is None and candidate_bbox_normalized is None:
+        if candidate_background is None:
+            candidate_background = _estimate_background(candidate_image)
+        candidate_bbox = _auto_crop_bbox(candidate_image, candidate_background, auto_crop_padding_pixels, "candidate_image_path")
+    else:
+        candidate_bbox = _bbox_from_args(
+            candidate_image,
+            candidate_bbox_pixels,
+            candidate_bbox_normalized,
+            "candidate_bbox_pixels",
+            "candidate_bbox_normalized",
+        )
 
     reference_scaled = _crop_and_scale(reference_image, reference_bbox)
     candidate_scaled = _crop_and_scale(candidate_image, candidate_bbox)
@@ -466,6 +514,9 @@ def compare_image_appearance(
         "band_edges_normalized": band_edges,
         "grid_rows": grid_rows,
         "grid_columns": grid_columns,
+        "auto_crop_reference": auto_crop_reference,
+        "auto_crop_candidate": auto_crop_candidate,
+        "auto_crop_padding_pixels": auto_crop_padding_pixels,
         "mask_mode": mask_mode,
         "comparison_mask_mode": comparison_mask_mode,
         "reference_background_color": reference_background,
