@@ -51,6 +51,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
 | radial_profile_deform | Apply non-periodic axial radius scale, offset, or target-radius profiles to cylindrical or lathed polygon meshes. |
+| linear_profile_deform | Apply non-radial axial coordinate profiles for tapering decals, panels, ribbons, cards, labels, and other mesh layers. |
 | cylindrical_component_deform | Detect connected components in image masks and apply fitted local relief features to cylindrical or lathed meshes. |
 | cylindrical_image_deform | Deform a cylindrical or lathed mesh from an image sampled in angle/height space for photo-driven relief or emboss/deboss details. |
 | uv_texture_deform | Deform UV-mapped polygon meshes by sampling an image through vertex UVs along normals, axes, or radial directions. |
