@@ -15,6 +15,7 @@ def create_curved_text(
     font: str = "Arial",
     fit_to_arc: bool = True,
     create_geometry: bool = True,
+    geometry_mode: str = "tube",
     bevel_radius: float = 0.008,
     bevel_segments: int = 6,
     keep_curves: bool = False,
@@ -24,9 +25,10 @@ def create_curved_text(
     """Create text curves or tube geometry conformed to a cylindrical surface.
 
     The text is generated as Maya text curves, mapped around a cylindrical
-    surface, and optionally converted into raised/engraved tube geometry. This
-    is useful for generic curved labels, embossing guides, raised outlines, and
-    engraved text on bottles, cups, cans, handles, or other cylindrical forms.
+    surface, and optionally converted into raised/engraved tube geometry or
+    filled polygon text patches. This is useful for generic curved labels,
+    embossing guides, raised outlines, filled text, and engraved text on
+    bottles, cups, cans, handles, or other cylindrical forms.
     """
     import math
     import random
@@ -68,6 +70,14 @@ def create_curved_text(
     if not isinstance(bevel_segments, int) or isinstance(bevel_segments, bool) or bevel_segments < 3:
         raise ValueError("bevel_segments must be an integer greater than or equal to 3.")
 
+    if not isinstance(geometry_mode, str):
+        raise ValueError("geometry_mode must be one of tube, filled, or curves.")
+    geometry_mode = geometry_mode.lower()
+    if geometry_mode not in {"tube", "filled", "curves"}:
+        raise ValueError("geometry_mode must be one of tube, filled, or curves.")
+    if not create_geometry:
+        geometry_mode = "curves"
+
     center = _validate_vector(center, 3, "center")
     axis = axis.lower()
     axes = {
@@ -102,6 +112,17 @@ def create_curved_text(
     theta_end = math.radians(angle_end)
     mapped_radius = radius + surface_offset
 
+    def _map_flat_position(flat_x, flat_y):
+        local_x = (flat_x - text_center_x) * scale
+        local_y = (flat_y - text_center_y) * scale
+        u = (local_x / arc_width) + 0.5
+        theta = theta_start + (theta_end - theta_start) * u
+        position = [center[0], center[1], center[2]]
+        position[axis_index] = center[axis_index] + axis_center + local_y
+        position[radial_a] = center[radial_a] + mapped_radius * math.sin(theta)
+        position[radial_b] = center[radial_b] + mapped_radius * math.cos(theta)
+        return position
+
     curve_shapes = cmds.listRelatives(curve_group, allDescendents=True, fullPath=True, type="nurbsCurve") or []
     curve_transforms = []
     for shape in curve_shapes:
@@ -109,22 +130,35 @@ def create_curved_text(
         if parents and parents[0] not in curve_transforms:
             curve_transforms.append(parents[0])
 
+    geometry = []
+    if geometry_mode == "filled":
+        for index, curve in enumerate(curve_transforms):
+            try:
+                mesh_result = cmds.planarSrf(
+                    curve,
+                    name=f"{name}_filled_geo_{index}",
+                    constructionHistory=False,
+                    object=True,
+                    polygon=1,
+                )
+                if not mesh_result:
+                    continue
+                mesh = mesh_result[0]
+                vertices = cmds.ls(f"{mesh}.vtx[*]", flatten=True) or []
+                for vertex in vertices:
+                    x, y, _ = cmds.xform(vertex, query=True, worldSpace=True, translation=True)
+                    cmds.xform(vertex, worldSpace=True, translation=_map_flat_position(x, y))
+                geometry.append(mesh)
+            except Exception:
+                continue
+
     for shape in curve_shapes:
         cvs = cmds.ls(f"{shape}.cv[*]", flatten=True) or []
         for cv in cvs:
             x, y, _ = cmds.xform(cv, query=True, worldSpace=True, translation=True)
-            local_x = (x - text_center_x) * scale
-            local_y = (y - text_center_y) * scale
-            u = (local_x / arc_width) + 0.5
-            theta = theta_start + (theta_end - theta_start) * u
-            position = [center[0], center[1], center[2]]
-            position[axis_index] = center[axis_index] + axis_center + local_y
-            position[radial_a] = center[radial_a] + mapped_radius * math.sin(theta)
-            position[radial_b] = center[radial_b] + mapped_radius * math.cos(theta)
-            cmds.xform(cv, worldSpace=True, translation=position)
+            cmds.xform(cv, worldSpace=True, translation=_map_flat_position(x, y))
 
-    geometry = []
-    if create_geometry and bevel_radius > 0:
+    if geometry_mode == "tube" and bevel_radius > 0:
         for index, path in enumerate(curve_transforms):
             profile = cmds.circle(
                 name=f"{name}_profile_{index}",
@@ -177,6 +211,7 @@ def create_curved_text(
         "success": True,
         "name": output_group or curve_group,
         "text": text,
+        "geometry_mode": geometry_mode,
         "curve_group": curve_group,
         "geometry_group": output_group,
         "geometry": geometry,
