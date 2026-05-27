@@ -33,6 +33,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_material | Create and assign materials with various types (lambert, phong, wood, marble, chrome, glass, etc.) |
 | create_textured_material | Create an image-textured material, connect file and place2dTexture nodes, and optionally assign it to UV-mapped objects. |
 | create_textured_label | Create a UV-mapped curved label mesh around a bottle or cylindrical object and apply an image texture directly through UVs. |
+| create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles for bottles, cups, vases, and similar forms. |
 | uv_operations | List, create, switch, project, normalize, and lay out UV sets for polygon meshes. |
 | create_curve | Generate NURBS curves for various shapes (line, circle, spiral, helix, star, gear, etc.) |
 | curve_modeling | Create geometry using curve-based modeling techniques (extrude, loft, revolve, sweep, etc.) |
