@@ -40,6 +40,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_revolved_liquid_volume | Create inset axisymmetric liquid fill volumes with top and bottom caps inside lathed vessels. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
+| polar_mesh_deform | Apply coupled angular radial and axial deformation for petal bases, star supports, lobed feet, or cyclic punt details. |
 | localized_radial_pattern_deform | Apply localized repeated dimples, raised dots, or embossed/debossed radial features to cylindrical meshes. |
 | uv_operations | List, create, switch, project, normalize, and lay out UV sets for polygon meshes. |
 | create_curve | Generate NURBS curves for various shapes (line, circle, spiral, helix, star, gear, etc.) |
