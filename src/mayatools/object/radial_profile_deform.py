@@ -31,6 +31,7 @@ def radial_profile_deform(
     """
     import math
     import maya.cmds as cmds
+    import maya.api.OpenMaya as om
 
     def _is_number(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -122,8 +123,14 @@ def radial_profile_deform(
     shapes = cmds.listRelatives(object_name, shapes=True, fullPath=True) or []
     if cmds.objectType(object_name) == "mesh":
         shapes = [object_name]
-    if not any(cmds.objectType(shape) == "mesh" for shape in shapes):
+    mesh_shapes = [shape for shape in shapes if cmds.objectType(shape) == "mesh"]
+    if not mesh_shapes:
         raise ValueError(f"{object_name} is not a polygon mesh transform or mesh shape.")
+
+    selection = om.MSelectionList()
+    selection.add(mesh_shapes[0])
+    dag_path = selection.getDagPath(0)
+    mesh_fn = om.MFnMesh(dag_path)
 
     bbox = cmds.exactWorldBoundingBox(object_name)
     if center is None:
@@ -145,16 +152,17 @@ def radial_profile_deform(
     if position_mode == "normalized" and abs(axis_span) <= 1e-9:
         raise ValueError("axis_range must have non-zero length when position_mode is normalized.")
 
-    vertices = cmds.ls(f"{object_name}.vtx[*]", flatten=True) or []
-    if not vertices:
+    points = mesh_fn.getPoints(om.MSpace.kWorld)
+    if not points:
         raise ValueError(f"No vertices found on {object_name}.")
 
     displacements = []
     deformed_vertices = 0
     skipped_vertices = 0
 
-    for vertex in vertices:
-        position = cmds.xform(vertex, query=True, worldSpace=True, translation=True)
+    for point_index in range(len(points)):
+        point = points[point_index]
+        position = [point.x, point.y, point.z]
         axis_value = position[axis_index]
         if axis_value < clean_axis_range[0] or axis_value > clean_axis_range[1]:
             skipped_vertices += 1
@@ -191,9 +199,12 @@ def radial_profile_deform(
         scale = new_radius / radius
         position[radial_a] = clean_center[radial_a] + delta_a * scale
         position[radial_b] = clean_center[radial_b] + delta_b * scale
-        cmds.xform(vertex, worldSpace=True, translation=position)
+        points[point_index] = om.MPoint(position[0], position[1], position[2])
         displacements.append(displacement)
         deformed_vertices += 1
+
+    if deformed_vertices:
+        mesh_fn.setPoints(points, om.MSpace.kWorld)
 
     if smooth:
         cmds.polySoftEdge(object_name, angle=180, constructionHistory=False)
