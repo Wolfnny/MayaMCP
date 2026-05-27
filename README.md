@@ -47,12 +47,13 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_tube_mesh_from_curves | Create polygon tube geometry along curves or point paths for trim, seams, strokes, wires, pipes, or raised outlines. |
 | create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles, with optional smooth profile resampling. |
 | create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles, with optional smooth profile resampling. |
-| create_revolved_liquid_volume | Create inset axisymmetric liquid fill volumes with top and bottom caps inside lathed vessels. |
+| create_revolved_liquid_volume | Create inset axisymmetric or angular-sector liquid fill volumes with top and bottom caps inside lathed vessels. |
 | extract_revolved_profile_from_image | Extract a lathe-ready radius/height profile from an image silhouette for reference-driven revolved modeling. |
 | extract_image_color_regions | Extract connected color or foreground regions from an image reference and report normalized and product-height-space bounds. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
 | radial_profile_deform | Apply non-periodic axial radius scale, offset, or target-radius profiles to cylindrical or lathed polygon meshes. |
+| sample_mesh_radial_profile | Sample an axial radial profile from an existing mesh for rebuilding, comparison, or partial-volume generation. |
 | linear_profile_deform | Apply non-radial axial coordinate profiles for tapering decals, panels, ribbons, cards, labels, and other mesh layers. |
 | fit_objects_to_bounds | Fit one or more mesh or curve objects to target world-space bounds by scaling points or transforms. |
 | cylindrical_component_deform | Detect connected components in image masks and apply fitted local relief features to cylindrical or lathed meshes. |

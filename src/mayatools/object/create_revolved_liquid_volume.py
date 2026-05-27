@@ -9,6 +9,8 @@ def create_revolved_liquid_volume(
     radius_offset: float = -0.02,
     radial_segments: int = 96,
     height_segments: int = 0,
+    angle_start: float = 0.0,
+    angle_end: float = 360.0,
     profile_interpolation: str = "linear",
     center: List[float] = [0.0, 0.0, 0.0],
     cap_top: bool = True,
@@ -23,6 +25,8 @@ def create_revolved_liquid_volume(
     The container profile is a list of [height, radius] pairs around the Y axis.
     The generated liquid surface can be inset with radius_offset to avoid
     overlapping a container wall, and it can include flat top and bottom caps.
+    angle_start/angle_end can limit the generated volume to an angular sector
+    for cutaway vessels, front-facing product previews, or partial fill views.
     This is useful for generic bottles, glasses, cups, jars, tanks, and other
     transparent or cutaway vessels that need a visible fill volume.
     """
@@ -139,6 +143,14 @@ def create_revolved_liquid_volume(
     radius_offset = _validate_scalar(radius_offset, "radius_offset")
     radial_segments = _validate_segments(radial_segments, "radial_segments", 3)
     height_segments = _validate_segments(height_segments, "height_segments", 0)
+    angle_start = _validate_scalar(angle_start, "angle_start")
+    angle_end = _validate_scalar(angle_end, "angle_end")
+    angle_span_degrees = angle_end - angle_start
+    if angle_span_degrees <= 0.0 or angle_span_degrees > 360.0:
+        raise ValueError("angle_end must be greater than angle_start and span no more than 360 degrees.")
+    full_revolve = abs(angle_span_degrees - 360.0) <= 1e-6
+    theta_start = math.radians(angle_start)
+    theta_span = math.radians(angle_span_degrees)
     cap_thickness = _validate_scalar(cap_thickness, "cap_thickness")
     if cap_thickness <= 0.0:
         raise ValueError("cap_thickness must be greater than zero.")
@@ -181,7 +193,7 @@ def create_revolved_liquid_volume(
         profile_index = int(round((y + 0.5) * max_profile_index))
         profile_index = max(0, min(max_profile_index, profile_index))
         profile_height, radius = sampled_profile[profile_index]
-        theta = math.tau * u
+        theta = theta_start + theta_span * u
         world_x = center[0] + radius * math.sin(theta)
         world_y = center[1] + profile_height
         world_z = center[2] + radius * math.cos(theta)
@@ -189,34 +201,63 @@ def create_revolved_liquid_volume(
 
     parts = [side]
     caps = []
+
+    def _create_sector_cap(cap_name, radius, height, normal_sign):
+        if full_revolve:
+            cap = cmds.polyCylinder(
+                name=cap_name,
+                radius=radius,
+                height=cap_thickness,
+                subdivisionsAxis=radial_segments,
+                subdivisionsHeight=1,
+                constructionHistory=False,
+            )[0]
+            cmds.setAttr(f"{cap}.translate", center[0], center[1] + height, center[2], type="double3")
+            return cap
+
+        triangles = []
+        for index in range(radial_segments):
+            theta0 = theta_start + theta_span * (index / float(radial_segments))
+            theta1 = theta_start + theta_span * ((index + 1) / float(radial_segments))
+            center_point = [center[0], center[1] + height, center[2]]
+            point0 = [center[0] + radius * math.sin(theta0), center[1] + height, center[2] + radius * math.cos(theta0)]
+            point1 = [center[0] + radius * math.sin(theta1), center[1] + height, center[2] + radius * math.cos(theta1)]
+            points = [center_point, point0, point1] if normal_sign >= 0 else [center_point, point1, point0]
+            triangle = cmds.polyCreateFacet(name=f"{cap_name}_tri", point=points, constructionHistory=False)[0]
+            triangles.append(triangle)
+
+        if not triangles:
+            return None
+        cap = triangles[0]
+        if len(triangles) > 1:
+            cap = cmds.polyUnite(triangles, name=cap_name, constructionHistory=False)[0]
+            for triangle in triangles:
+                if triangle != cap and cmds.objExists(triangle):
+                    try:
+                        cmds.delete(triangle)
+                    except Exception:
+                        pass
+        try:
+            cmds.polyMergeVertex(cap, distance=1e-6, constructionHistory=False)
+            cmds.delete(cap, constructionHistory=True)
+        except Exception:
+            pass
+        return cap
+
     if cap_top:
         top_radius = sampled_profile[-1][1]
         if top_radius > 0.0:
-            top = cmds.polyCylinder(
-                name=f"{name}_top_surface",
-                radius=top_radius,
-                height=cap_thickness,
-                subdivisionsAxis=radial_segments,
-                subdivisionsHeight=1,
-                constructionHistory=False,
-            )[0]
-            cmds.setAttr(f"{top}.translate", center[0], center[1] + fill_height, center[2], type="double3")
-            parts.append(top)
-            caps.append(top)
+            top = _create_sector_cap(f"{name}_top_surface", top_radius, fill_height, 1.0)
+            if top:
+                parts.append(top)
+                caps.append(top)
     if cap_bottom:
         bottom_radius = sampled_profile[0][1]
         if bottom_radius > 0.0:
-            bottom = cmds.polyCylinder(
-                name=f"{name}_bottom_surface",
-                radius=bottom_radius,
-                height=cap_thickness,
-                subdivisionsAxis=radial_segments,
-                subdivisionsHeight=1,
-                constructionHistory=False,
-            )[0]
-            cmds.setAttr(f"{bottom}.translate", center[0], center[1] + bottom_height, center[2], type="double3")
-            parts.append(bottom)
-            caps.append(bottom)
+            bottom = _create_sector_cap(f"{name}_bottom_surface", bottom_radius, bottom_height, -1.0)
+            if bottom:
+                parts.append(bottom)
+                caps.append(bottom)
 
     if smooth:
         for part in parts:
@@ -265,6 +306,9 @@ def create_revolved_liquid_volume(
         "radius_offset": radius_offset,
         "radial_segments": radial_segments,
         "height_segments": len(sampled_profile) - 1,
+        "angle_start": angle_start,
+        "angle_end": angle_end,
+        "angle_span": angle_span_degrees,
         "profile_interpolation": profile_interpolation,
         "cap_top": cap_top,
         "cap_bottom": cap_bottom,
