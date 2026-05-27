@@ -15,10 +15,10 @@ Here is a list of some of the tools registered with Maya MCP.
 
 | Tool | Description |
 |------|-------------|
-| list_objects_by_type | Get a list of objects in the scene. Use filter_by to filter for certain objects such as "cameras", "lights", "materials", or "shapes". |
+| list_objects_by_type | List scene nodes by common categories such as meshes, curves, geometry, cameras, lights, materials, textures, file textures, shading groups, and shapes. |
 | create_object | Create an object in the Maya scene. Object types available are cube, cone, sphere, cylinder, camera, spotLight, pointLight, directionalLight. |
 | get_object_attributes | Get a list of attributes on a Maya object. | 
-| set_object_attributes | Set an object's attribute with a specific value. |
+| set_object_attribute | Set an object's scalar, string, boolean, or 3-channel vector attribute, optionally disconnecting incoming attribute links first. |
 | scene_new | Create a new scene in Maya. Use the force argument to force a new scene when an existing scene is loaded and has been modified. |
 | scene_open | Load in a scene into Maya. | 
 | scene_save | Save the current scene. If the filename is not specified, it will save it as its current name. |
@@ -26,6 +26,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image; omitted targets auto-frame visible scene geometry. |
 | create_reference_image_plane | Create a textured world-space reference image plane with optional alpha fitted to target objects for silhouette, proportion, or layout comparison. |
 | compare_image_silhouettes | Compare two image silhouettes with normalized overlay, IoU, centroid, aspect, row-width, vertical-band metrics, and optional profile-correction output. |
+| compare_image_appearance | Compare cropped and aligned reference/candidate image appearance with masked RGB and luminance error metrics plus a heatmap diagnostic. |
 
 ## Advanced Modeling Tools
 
