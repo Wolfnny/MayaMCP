@@ -23,6 +23,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | scene_open | Load in a scene into Maya. | 
 | scene_save | Save the current scene. If the filename is not specified, it will save it as its current name. |
 | select_object | Select an object in the scene. |
+| setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image. |
 
 ## Advanced Modeling Tools
 
