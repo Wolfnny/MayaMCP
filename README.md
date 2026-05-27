@@ -25,7 +25,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | select_object | Select an object in the scene. |
 | setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image. |
 | create_reference_image_plane | Create a textured world-space reference image plane with optional alpha fitted to target objects for silhouette, proportion, or layout comparison. |
-| compare_image_silhouettes | Compare two image silhouettes with normalized overlay, IoU, centroid, aspect, and row-width error metrics. |
+| compare_image_silhouettes | Compare two image silhouettes with normalized overlay, IoU, centroid, aspect, row-width, and vertical-band width error metrics. |
 
 ## Advanced Modeling Tools
 
@@ -50,6 +50,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | extract_image_color_regions | Extract connected color or foreground regions from an image reference and report normalized and product-height-space bounds. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
+| radial_profile_deform | Apply non-periodic axial radius scale, offset, or target-radius profiles to cylindrical or lathed polygon meshes. |
 | cylindrical_component_deform | Detect connected components in image masks and apply fitted local relief features to cylindrical or lathed meshes. |
 | cylindrical_image_deform | Deform a cylindrical or lathed mesh from an image sampled in angle/height space for photo-driven relief or emboss/deboss details. |
 | uv_texture_deform | Deform UV-mapped polygon meshes by sampling an image through vertex UVs along normals, axes, or radial directions. |

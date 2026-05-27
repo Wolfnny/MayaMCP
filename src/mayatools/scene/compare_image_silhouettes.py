@@ -22,6 +22,8 @@ def compare_image_silhouettes(
     scale_mode: str = "height",
     padding_fraction: float = 0.04,
     row_sample_count: int = 64,
+    band_edges_normalized: List[float] = None,
+    band_sample_count: int = 64,
     min_foreground_pixels: int = 8,
 ) -> Dict[str, Any]:
     """Compare two image silhouettes and optionally write an overlap diagnostic.
@@ -33,10 +35,10 @@ def compare_image_silhouettes(
     matching height, so width errors remain measurable instead of being hidden
     by a full x/y stretch. Hole filling is enabled by default so transparent or
     outlined objects can be compared as solid silhouettes. Returned metrics
-    include IoU, overlap counts, aspect/centroid differences, and per-row
-    silhouette width error. This is useful for generic visual QA of modeled
-    products, props, icons, sprites, masks, decals, or rendered assets against
-    reference images.
+    include IoU, overlap counts, aspect/centroid differences, per-row
+    silhouette width error, and optional vertical band width summaries. This is
+    useful for generic visual QA of modeled products, props, icons, sprites,
+    masks, decals, or rendered assets against reference images.
     """
     import math
     import os
@@ -323,6 +325,48 @@ def compare_image_silhouettes(
             "samples": samples,
         }
 
+    def _band_width_errors(reference_mask, candidate_mask, edges):
+        bands = []
+        for index in range(len(edges) - 1):
+            start = edges[index]
+            end = edges[index + 1]
+            if end <= start:
+                raise ValueError("band_edges_normalized must be strictly increasing.")
+            start_row = int(round(_clamp(start) * (compare_height - 1)))
+            end_row = int(round(_clamp(end) * (compare_height - 1)))
+            if end_row < start_row:
+                start_row, end_row = end_row, start_row
+            sample_total = max(2, band_sample_count)
+            errors = []
+            signed_errors = []
+            reference_widths = []
+            candidate_widths = []
+            for sample_index in range(sample_total):
+                if sample_total == 1 or end_row == start_row:
+                    row = start_row
+                else:
+                    row = int(round(start_row + sample_index * (end_row - start_row) / float(sample_total - 1)))
+                reference_width = _row_width(reference_mask, row)
+                candidate_width = _row_width(candidate_mask, row)
+                signed = candidate_width - reference_width
+                errors.append(abs(signed))
+                signed_errors.append(signed)
+                reference_widths.append(reference_width)
+                candidate_widths.append(candidate_width)
+            bands.append({
+                "index": index,
+                "start_normalized": start,
+                "end_normalized": end,
+                "start_row": start_row,
+                "end_row": end_row,
+                "mean_reference_width": sum(reference_widths) / float(len(reference_widths)) if reference_widths else 0.0,
+                "mean_candidate_width": sum(candidate_widths) / float(len(candidate_widths)) if candidate_widths else 0.0,
+                "mean_abs_width_error": sum(errors) / float(len(errors)) if errors else 0.0,
+                "max_abs_width_error": max(errors) if errors else 0.0,
+                "mean_signed_width_error": sum(signed_errors) / float(len(signed_errors)) if signed_errors else 0.0,
+            })
+        return bands
+
     def _write_overlay(path, reference_mask, candidate_mask):
         image = QImage(compare_width, compare_height, QImage.Format_ARGB32)
         for y in range(compare_height):
@@ -370,7 +414,21 @@ def compare_image_silhouettes(
     compare_width = _validate_int(compare_width, "compare_width", 8)
     compare_height = _validate_int(compare_height, "compare_height", 8)
     row_sample_count = _validate_int(row_sample_count, "row_sample_count", 2)
+    band_sample_count = _validate_int(band_sample_count, "band_sample_count", 2)
     min_foreground_pixels = _validate_int(min_foreground_pixels, "min_foreground_pixels", 1)
+    clean_band_edges = None
+    if band_edges_normalized is not None:
+        if not isinstance(band_edges_normalized, list) or len(band_edges_normalized) < 2:
+            raise ValueError("band_edges_normalized must be a list with at least two numeric values.")
+        clean_band_edges = []
+        for value in band_edges_normalized:
+            clean_value = _validate_scalar(value, "band_edges_normalized")
+            if clean_value < 0.0 or clean_value > 1.0:
+                raise ValueError("band_edges_normalized values must be in the range 0..1.")
+            clean_band_edges.append(clean_value)
+        for index in range(len(clean_band_edges) - 1):
+            if clean_band_edges[index + 1] <= clean_band_edges[index]:
+                raise ValueError("band_edges_normalized must be strictly increasing.")
     padding_fraction = _validate_scalar(padding_fraction, "padding_fraction")
     if padding_fraction < 0.0 or padding_fraction >= 0.45:
         raise ValueError("padding_fraction must be greater than or equal to 0 and less than 0.45.")
@@ -419,6 +477,7 @@ def compare_image_silhouettes(
     precision = intersection / float(candidate_count) if candidate_count else 0.0
     recall = intersection / float(reference_count) if reference_count else 0.0
     width_metrics = _row_width_errors(reference_mask, candidate_mask)
+    band_metrics = _band_width_errors(reference_mask, candidate_mask, clean_band_edges) if clean_band_edges else []
 
     if output_path:
         output_path = os.path.normpath(output_path)
@@ -443,6 +502,8 @@ def compare_image_silhouettes(
         "padding_fraction": padding_fraction,
         "compare_width": compare_width,
         "compare_height": compare_height,
+        "band_edges_normalized": clean_band_edges,
+        "band_sample_count": band_sample_count,
         "reference_crop_bbox_pixels": reference_bbox,
         "candidate_crop_bbox_pixels": candidate_bbox,
         "reference_foreground_bbox_pixels": reference_data["foreground_bbox"],
@@ -475,4 +536,5 @@ def compare_image_silhouettes(
         "max_abs_width_error": width_metrics["max_abs_width_error"],
         "mean_signed_width_error": width_metrics["mean_signed_width_error"],
         "row_width_samples": width_metrics["samples"],
+        "band_width_metrics": band_metrics,
     }
