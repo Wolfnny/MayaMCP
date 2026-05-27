@@ -14,6 +14,7 @@ def setup_product_preview_scene(
     rim_light_intensity: float = 0.65,
     display_textures: bool = True,
     transparency_algorithm: str = "depthPeeling",
+    display_curves: bool = False,
     playblast_path: str = None,
     image_width: int = 1200,
     image_height: int = 1600,
@@ -189,7 +190,7 @@ def setup_product_preview_scene(
                 wireframeOnShaded=False,
                 grid=False,
             )
-            cmds.modelEditor(panel, edit=True, nurbsCurves=False, locators=False, cameras=False, lights=False, joints=False)
+            cmds.modelEditor(panel, edit=True, nurbsCurves=bool(display_curves), locators=False, cameras=False, lights=False, joints=False)
             try:
                 cmds.modelEditor(panel, edit=True, transparencyAlgorithm=transparency_algorithm)
             except Exception:
@@ -235,6 +236,7 @@ def setup_product_preview_scene(
         "lights": [key_light, fill_light, rim_light],
         "background_color": background_color,
         "transparency_algorithm": transparency_algorithm,
+        "display_curves": bool(display_curves),
         "image_width": image_width,
         "image_height": image_height,
         "configured_panels": configured_panels,
