@@ -14,6 +14,7 @@ def create_reference_image_plane(
     plane_axis: str = "z",
     offset: float = -0.05,
     opacity: float = 0.45,
+    use_alpha: bool = False,
     material_name: str = None,
     subdivisions_x: int = 1,
     subdivisions_y: int = 1,
@@ -25,7 +26,8 @@ def create_reference_image_plane(
     The plane can be fitted to one or more target objects so photographed or
     concept-art references can be compared directly against modeled geometry.
     plane_axis controls the plane normal: "z" creates an XY front plane, "x"
-    creates a YZ side plane, and "y" creates an XZ top/bottom plane.
+    creates a YZ side plane, and "y" creates an XZ top/bottom plane. When
+    use_alpha is true, texture alpha is connected to material transparency.
     """
     import os
     import struct
@@ -220,7 +222,15 @@ def create_reference_image_plane(
     shading_group = f"{material_name}SG"
 
     if replace_existing:
-        for node_name in [name, shading_group, f"{material_name}_file", f"{material_name}_place2d", material_name]:
+        for node_name in [
+            name,
+            shading_group,
+            f"{material_name}_file",
+            f"{material_name}_place2d",
+            f"{material_name}_alpha_opacity",
+            f"{material_name}_alpha_reverse",
+            material_name,
+        ]:
             _safe_delete(node_name)
 
     plane = cmds.polyPlane(
@@ -266,6 +276,20 @@ def create_reference_image_plane(
     cmds.setAttr(f"{shader}.ambientColor", 1.0, 1.0, 1.0, type="double3")
     cmds.setAttr(f"{shader}.diffuse", 1.0)
     cmds.setAttr(f"{shader}.transparency", 1.0 - opacity, 1.0 - opacity, 1.0 - opacity, type="double3")
+    alpha_node = None
+    alpha_opacity_node = None
+    if use_alpha and cmds.attributeQuery("transparency", node=shader, exists=True):
+        if cmds.attributeQuery("outAlpha", node=file_node, exists=True):
+            alpha_opacity_node = cmds.shadingNode("multiplyDivide", asUtility=True, name=f"{material_name}_alpha_opacity")
+            cmds.setAttr(f"{alpha_opacity_node}.input2", opacity, opacity, opacity, type="double3")
+            for channel in ["X", "Y", "Z"]:
+                cmds.connectAttr(f"{file_node}.outAlpha", f"{alpha_opacity_node}.input1{channel}", force=True)
+            alpha_node = cmds.shadingNode("reverse", asUtility=True, name=f"{material_name}_alpha_reverse")
+            for channel in ["X", "Y", "Z"]:
+                cmds.connectAttr(f"{alpha_opacity_node}.output{channel}", f"{alpha_node}.input{channel}", force=True)
+            cmds.connectAttr(f"{alpha_node}.output", f"{shader}.transparency", force=True)
+        elif cmds.attributeQuery("outTransparency", node=file_node, exists=True):
+            cmds.connectAttr(f"{file_node}.outTransparency", f"{shader}.transparency", force=True)
 
     shading_group = cmds.sets(name=shading_group, empty=True, renderable=True, noSurfaceShader=True)
     cmds.connectAttr(f"{shader}.outColor", f"{shading_group}.surfaceShader", force=True)
@@ -294,6 +318,8 @@ def create_reference_image_plane(
         "material": shader,
         "file_node": file_node,
         "place2d": place2d,
+        "alpha_node": alpha_node,
+        "alpha_opacity_node": alpha_opacity_node,
         "shading_group": shading_group,
         "image_path": normalized_image_path,
         "image_width_pixels": image_width_pixels,
@@ -307,4 +333,5 @@ def create_reference_image_plane(
         "plane_axis": plane_axis,
         "offset": offset,
         "opacity": opacity,
+        "use_alpha": bool(use_alpha),
     }

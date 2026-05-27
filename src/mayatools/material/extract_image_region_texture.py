@@ -10,6 +10,9 @@ def extract_image_region_texture(
     output_width: int = 0,
     output_height: int = 0,
     stretch_to_output: bool = True,
+    auto_bbox_mode: str = "none",
+    alpha_threshold: float = 0.05,
+    min_foreground_pixels: int = 1,
     horizontal_remap: str = "none",
     source_arc_degrees: float = 120.0,
     remap_center_x: float = 0.5,
@@ -21,12 +24,14 @@ def extract_image_region_texture(
 ) -> Dict[str, Any]:
     """Crop an image reference region into a reusable texture file.
 
-    The crop can be defined in pixels or normalized image coordinates, padded,
-    optionally resized, optionally remapped from a front cylindrical projection,
-    and optionally written with background pixels made transparent. Background
-    masking can remove all matching pixels or only flood-fill matching pixels
-    connected to crop edges. The output is intended for generic reference-driven
-    texturing workflows such as labels, panels, decals, caps, badges, or trim.
+    The crop can be defined in pixels, normalized image coordinates, or
+    automatically from foreground pixels against an estimated/provided
+    background color. The crop can be padded, optionally resized, optionally
+    remapped from a front cylindrical projection, and optionally written with
+    background pixels made transparent. Background masking can remove all
+    matching pixels or only flood-fill matching pixels connected to crop edges.
+    The output is intended for generic reference-driven texturing workflows
+    such as labels, panels, decals, caps, badges, silhouettes, or trim.
     """
     import math
     import os
@@ -53,6 +58,11 @@ def extract_image_region_texture(
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f"{arg_name} must be an integer greater than or equal to {minimum}.")
         return value
+
+    def _validate_scalar(value, arg_name):
+        if not _is_number(value):
+            raise ValueError(f"{arg_name} must be numeric.")
+        return float(value)
 
     def _validate_color(values, arg_name):
         color = _validate_vector(values, 3, arg_name)
@@ -98,6 +108,28 @@ def extract_image_region_texture(
         if alpha <= 0.0:
             return False
         return _color_distance([red, green, blue], color) <= tolerance
+
+    def _foreground_bbox(image, color, tolerance, minimum_alpha, minimum_pixels):
+        bbox = None
+        count = 0
+        for y in range(image.height()):
+            for x in range(image.width()):
+                red, green, blue, alpha = _pixel_rgb_alpha(image, x, y)
+                if alpha < minimum_alpha:
+                    continue
+                if _color_distance([red, green, blue], color) <= tolerance:
+                    continue
+                count += 1
+                if bbox is None:
+                    bbox = [x, y, x, y]
+                else:
+                    bbox[0] = min(bbox[0], x)
+                    bbox[1] = min(bbox[1], y)
+                    bbox[2] = max(bbox[2], x)
+                    bbox[3] = max(bbox[3], y)
+        if count < minimum_pixels or bbox is None:
+            raise ValueError("No foreground bbox could be found. Adjust background_color, background_tolerance, alpha_threshold, or min_foreground_pixels.")
+        return bbox, count
 
     def _mask_background_by_color(image, color, tolerance):
         for y in range(image.height()):
@@ -217,14 +249,21 @@ def extract_image_region_texture(
     normalized_image_path = os.path.normpath(image_path)
     if not os.path.isfile(normalized_image_path):
         raise ValueError(f"Image path does not exist: {image_path}")
-    if bbox_pixels is None and bbox_normalized is None:
-        raise ValueError("bbox_pixels or bbox_normalized is required.")
     if bbox_pixels is not None and bbox_normalized is not None:
         raise ValueError("Provide only one of bbox_pixels or bbox_normalized.")
 
     padding_pixels = _validate_int(padding_pixels, "padding_pixels", 0)
     output_width = _validate_int(output_width, "output_width", 0)
     output_height = _validate_int(output_height, "output_height", 0)
+    min_foreground_pixels = _validate_int(min_foreground_pixels, "min_foreground_pixels", 1)
+    alpha_threshold = _validate_scalar(alpha_threshold, "alpha_threshold")
+    if alpha_threshold < 0.0 or alpha_threshold > 1.0:
+        raise ValueError("alpha_threshold must be in the 0..1 range.")
+    auto_bbox_mode = auto_bbox_mode.lower().strip()
+    if auto_bbox_mode not in {"none", "foreground"}:
+        raise ValueError("auto_bbox_mode must be one of none or foreground.")
+    if bbox_pixels is None and bbox_normalized is None and auto_bbox_mode == "none":
+        raise ValueError("bbox_pixels or bbox_normalized is required unless auto_bbox_mode is foreground.")
     horizontal_remap = horizontal_remap.lower().strip()
     if horizontal_remap not in {"none", "cylindrical_front"}:
         raise ValueError("horizontal_remap must be one of none or cylindrical_front.")
@@ -257,7 +296,19 @@ def extract_image_region_texture(
     if image_width < 2 or image_height < 2:
         raise ValueError("image must be at least 2x2 pixels.")
 
-    if bbox_normalized is not None:
+    auto_background_color = None
+    auto_foreground_count = 0
+    if bbox_pixels is None and bbox_normalized is None:
+        auto_background_color = _validate_color(background_color, "background_color") if background_color else _estimate_background(image)
+        auto_bbox, auto_foreground_count = _foreground_bbox(
+            image,
+            auto_background_color,
+            background_tolerance,
+            alpha_threshold,
+            min_foreground_pixels,
+        )
+        x_min, y_min, x_max, y_max = auto_bbox
+    elif bbox_normalized is not None:
         bbox = _validate_vector(bbox_normalized, 4, "bbox_normalized")
         if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
             raise ValueError("bbox_normalized must be [min_x, min_y, max_x, max_y].")
@@ -287,7 +338,7 @@ def extract_image_region_texture(
 
     clean_background_color = None
     if mask_background:
-        clean_background_color = _validate_color(background_color, "background_color") if background_color else _estimate_background(cropped)
+        clean_background_color = _validate_color(background_color, "background_color") if background_color else auto_background_color or _estimate_background(cropped)
         if mask_background_mode == "flood_fill":
             _mask_background_by_flood_fill(cropped, clean_background_color, background_tolerance)
         else:
@@ -340,11 +391,15 @@ def extract_image_region_texture(
         "crop_height": crop_height,
         "output_width": cropped.width(),
         "output_height": cropped.height(),
+        "auto_bbox_mode": auto_bbox_mode,
+        "auto_foreground_count": auto_foreground_count,
+        "alpha_threshold": alpha_threshold,
+        "min_foreground_pixels": min_foreground_pixels,
         "horizontal_remap": horizontal_remap,
         "source_arc_degrees": source_arc_degrees,
         "remap_center_x": remap_center_x,
         "mask_background": mask_background,
         "mask_background_mode": mask_background_mode,
-        "background_color": clean_background_color,
+        "background_color": clean_background_color or auto_background_color,
         "background_tolerance": background_tolerance,
     }
