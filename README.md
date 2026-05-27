@@ -26,7 +26,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image; omitted targets auto-frame visible scene geometry. |
 | create_reference_image_plane | Create a textured world-space reference image plane with optional alpha fitted to target objects for silhouette, proportion, or layout comparison. |
 | compare_image_silhouettes | Compare two image silhouettes with normalized overlay, IoU, centroid, aspect, row-width, vertical-band metrics, and optional profile-correction output. |
-| compare_image_appearance | Compare cropped and aligned reference/candidate image appearance with masked RGB and luminance error metrics plus a heatmap diagnostic. |
+| compare_image_appearance | Compare cropped and aligned reference/candidate image appearance with masked RGB/luminance error metrics, optional vertical-band summaries, and a heatmap diagnostic. |
 
 ## Advanced Modeling Tools
 

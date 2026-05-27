@@ -19,6 +19,7 @@ def compare_image_appearance(
     compare_width: int = 256,
     compare_height: int = 512,
     min_compare_pixels: int = 16,
+    band_edges_normalized: List[float] = None,
 ) -> Dict[str, Any]:
     """Compare aligned image appearance with color-error metrics.
 
@@ -26,8 +27,8 @@ def compare_image_appearance(
     product previews, and reference-matching workflows. It crops reference and
     candidate images, stretches both crops to a shared comparison size, builds
     optional alpha/foreground masks, computes RGB and luminance error metrics,
-    and can write a three-panel diagnostic image: reference, candidate, and
-    heatmapped absolute difference.
+    optionally summarizes errors by vertical bands, and can write a three-panel
+    diagnostic image: reference, candidate, and heatmapped absolute difference.
     """
     import math
     import os
@@ -205,6 +206,78 @@ def compare_image_appearance(
             return _make_color(1.0, (heat - 0.5) / 0.35, 0.0)
         return _make_color(1.0, 1.0, (heat - 0.85) / 0.15)
 
+    def _validate_band_edges(values):
+        if values is None:
+            return None
+        if not isinstance(values, list) or len(values) < 2 or not all(_is_number(value) for value in values):
+            raise ValueError("band_edges_normalized must be a list of at least two numeric values.")
+        edges = [_clamp(float(value)) for value in values]
+        if edges[0] != 0.0:
+            edges.insert(0, 0.0)
+        if edges[-1] != 1.0:
+            edges.append(1.0)
+        for index in range(len(edges) - 1):
+            if edges[index + 1] <= edges[index]:
+                raise ValueError("band_edges_normalized values must be strictly increasing.")
+        return edges
+
+    def _new_stats():
+        return {
+            "pixels": 0,
+            "sum_abs": [0.0, 0.0, 0.0],
+            "sum_squared": [0.0, 0.0, 0.0],
+            "sum_signed": [0.0, 0.0, 0.0],
+            "luminance_abs": 0.0,
+            "luminance_squared": 0.0,
+            "luminance_signed": 0.0,
+            "max_abs_error": 0.0,
+        }
+
+    def _update_stats(stats, rgb_delta, luma_delta):
+        stats["pixels"] += 1
+        stats["luminance_abs"] += abs(luma_delta)
+        stats["luminance_squared"] += luma_delta * luma_delta
+        stats["luminance_signed"] += luma_delta
+        for index in range(3):
+            abs_delta = abs(rgb_delta[index])
+            stats["sum_abs"][index] += abs_delta
+            stats["sum_squared"][index] += rgb_delta[index] * rgb_delta[index]
+            stats["sum_signed"][index] += rgb_delta[index]
+            stats["max_abs_error"] = max(stats["max_abs_error"], abs_delta)
+
+    def _finalize_stats(stats, extra=None):
+        result = dict(extra or {})
+        if stats["pixels"] <= 0:
+            result.update({
+                "pixels": 0,
+                "mean_abs_error_rgb": [None, None, None],
+                "mean_signed_error_rgb": [None, None, None],
+                "rmse_rgb": [None, None, None],
+                "mean_abs_error": None,
+                "rmse": None,
+                "max_abs_error": None,
+                "mean_abs_luminance_error": None,
+                "mean_signed_luminance_error": None,
+                "luminance_rmse": None,
+            })
+            return result
+        inv = 1.0 / stats["pixels"]
+        mean_abs_rgb = [value * inv for value in stats["sum_abs"]]
+        rmse_rgb_values = [math.sqrt(value * inv) for value in stats["sum_squared"]]
+        result.update({
+            "pixels": stats["pixels"],
+            "mean_abs_error_rgb": mean_abs_rgb,
+            "mean_signed_error_rgb": [value * inv for value in stats["sum_signed"]],
+            "rmse_rgb": rmse_rgb_values,
+            "mean_abs_error": sum(mean_abs_rgb) / 3.0,
+            "rmse": math.sqrt(sum(value * inv for value in stats["sum_squared"]) / 3.0),
+            "max_abs_error": stats["max_abs_error"],
+            "mean_abs_luminance_error": stats["luminance_abs"] * inv,
+            "mean_signed_luminance_error": stats["luminance_signed"] * inv,
+            "luminance_rmse": math.sqrt(stats["luminance_squared"] * inv),
+        })
+        return result
+
     reference_path, reference_image = _load_image(reference_image_path, "reference_image_path")
     candidate_path, candidate_image = _load_image(candidate_image_path, "candidate_image_path")
 
@@ -224,6 +297,7 @@ def compare_image_appearance(
     comparison_mask_mode = comparison_mask_mode.lower().strip()
     if comparison_mask_mode not in {"intersection", "union", "reference", "candidate", "all"}:
         raise ValueError("comparison_mask_mode must be intersection, union, reference, candidate, or all.")
+    band_edges = _validate_band_edges(band_edges_normalized)
 
     shared_background = _normalize_color(background_color, "background_color")
     reference_background = _normalize_color(reference_background_color, "reference_background_color") or shared_background
@@ -272,6 +346,10 @@ def compare_image_appearance(
     luminance_abs = 0.0
     luminance_squared = 0.0
     luminance_signed = 0.0
+    band_stats = []
+    if band_edges:
+        for band_index in range(len(band_edges) - 1):
+            band_stats.append(_new_stats())
 
     diff_image = None
     if output_path:
@@ -297,8 +375,10 @@ def compare_image_appearance(
             luminance_abs += abs(luma_delta)
             luminance_squared += luma_delta * luma_delta
             pixel_abs_sum = 0.0
+            rgb_delta = [0.0, 0.0, 0.0]
             for index in range(3):
                 delta = candidate_rgb[index] - ref_rgb[index]
+                rgb_delta[index] = delta
                 abs_delta = abs(delta)
                 sum_reference[index] += ref_rgb[index]
                 sum_candidate[index] += candidate_rgb[index]
@@ -307,6 +387,12 @@ def compare_image_appearance(
                 sum_squared[index] += delta * delta
                 max_abs_error = max(max_abs_error, abs_delta)
                 pixel_abs_sum += abs_delta
+            if band_edges:
+                y_normalized = y / float(max(1, compare_height - 1))
+                for band_index in range(len(band_edges) - 1):
+                    if band_edges[band_index] <= y_normalized <= band_edges[band_index + 1]:
+                        _update_stats(band_stats[band_index], rgb_delta, luma_delta)
+                        break
             if diff_image is not None:
                 diff_image.setPixelColor(x + compare_width * 2, y, _heat_color(pixel_abs_sum / 3.0))
 
@@ -328,6 +414,14 @@ def compare_image_appearance(
     rmse_rgb = [math.sqrt(value * inv_count) for value in sum_squared]
     mean_abs_error = sum(mean_abs_error_rgb) / 3.0
     rmse = math.sqrt(sum(value * inv_count for value in sum_squared) / 3.0)
+    band_appearance_metrics = []
+    if band_edges:
+        for band_index, stats in enumerate(band_stats):
+            band_appearance_metrics.append(_finalize_stats(stats, {
+                "band_index": band_index,
+                "y_min_normalized": band_edges[band_index],
+                "y_max_normalized": band_edges[band_index + 1],
+            }))
 
     return {
         "success": True,
@@ -338,6 +432,7 @@ def compare_image_appearance(
         "candidate_crop_bbox_pixels": candidate_bbox,
         "compare_width": compare_width,
         "compare_height": compare_height,
+        "band_edges_normalized": band_edges,
         "mask_mode": mask_mode,
         "comparison_mask_mode": comparison_mask_mode,
         "reference_background_color": reference_background,
@@ -357,4 +452,5 @@ def compare_image_appearance(
         "mean_signed_luminance_error": luminance_signed * inv_count,
         "mean_abs_luminance_error": luminance_abs * inv_count,
         "luminance_rmse": math.sqrt(luminance_squared * inv_count),
+        "band_appearance_metrics": band_appearance_metrics,
     }
