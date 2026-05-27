@@ -29,6 +29,9 @@ def compare_image_silhouettes(
     correction_profile_min_width: float = 0.02,
     correction_profile_scale_range: List[float] = None,
     min_foreground_pixels: int = 8,
+    auto_crop_reference: bool = False,
+    auto_crop_candidate: bool = False,
+    auto_crop_padding_pixels: int = 0,
 ) -> Dict[str, Any]:
     """Compare two image silhouettes and optionally write an overlap diagnostic.
 
@@ -44,6 +47,8 @@ def compare_image_silhouettes(
     optional width correction profiles that can drive generic profile-deform
     tools. This is useful for generic visual QA of modeled products, props,
     icons, sprites, masks, decals, or rendered assets against reference images.
+    Optional foreground auto-cropping is useful when renders are centered on a
+    larger preview canvas.
     """
     import math
     import os
@@ -136,6 +141,47 @@ def compare_image_silhouettes(
                     foreground_bbox[3] = max(foreground_bbox[3], row)
         return count, foreground_bbox
 
+    def _is_foreground_pixel(red, green, blue, alpha, color):
+        if alpha < alpha_threshold:
+            return False
+        if mask_mode == "alpha":
+            return alpha >= alpha_threshold
+        if mask_mode == "luminance":
+            luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            return luminance < luminance_threshold if invert_luminance else luminance >= luminance_threshold
+        return _color_distance([red, green, blue], color) > background_tolerance
+
+    def _auto_crop_bbox(image, search_bbox, color, padding_pixels, arg_prefix):
+        x0, y0, x1, y1 = search_bbox
+        width = image.width()
+        height = image.height()
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+        foreground_pixels = 0
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                red, green, blue, alpha = _pixel_rgb_alpha(image, x, y)
+                if not _is_foreground_pixel(red, green, blue, alpha, color):
+                    continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+                foreground_pixels += 1
+        if foreground_pixels < min_foreground_pixels:
+            raise ValueError(
+                f"Unable to auto-crop {arg_prefix}: not enough foreground pixels. "
+                "Adjust background colors, tolerances, thresholds, or provide an explicit bbox."
+            )
+        return [
+            max(0, min_x - padding_pixels),
+            max(0, min_y - padding_pixels),
+            min(width - 1, max_x + padding_pixels),
+            min(height - 1, max_y + padding_pixels),
+        ]
+
     def _fill_mask_holes(mask, width, height):
         visited = [bytearray(width) for _ in range(height)]
         stack = []
@@ -207,16 +253,7 @@ def compare_image_silhouettes(
             for column in range(width):
                 source_x = x0 + column
                 red, green, blue, alpha = _pixel_rgb_alpha(image, source_x, source_y)
-                if alpha < alpha_threshold:
-                    is_foreground = False
-                elif mask_mode == "alpha":
-                    is_foreground = alpha >= alpha_threshold
-                elif mask_mode == "luminance":
-                    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-                    is_foreground = luminance < luminance_threshold if invert_luminance else luminance >= luminance_threshold
-                else:
-                    is_foreground = _color_distance([red, green, blue], color) > background_tolerance
-                if not is_foreground:
+                if not _is_foreground_pixel(red, green, blue, alpha, color):
                     continue
                 mask[row][column] = 1
         if fill_holes:
@@ -501,6 +538,11 @@ def compare_image_silhouettes(
     correction_profile_min_width = _validate_scalar(correction_profile_min_width, "correction_profile_min_width")
     if correction_profile_min_width < 0.0:
         raise ValueError("correction_profile_min_width must be greater than or equal to zero.")
+    auto_crop_padding_pixels = _validate_int(auto_crop_padding_pixels, "auto_crop_padding_pixels", 0)
+    if not isinstance(auto_crop_reference, bool):
+        raise ValueError("auto_crop_reference must be a boolean.")
+    if not isinstance(auto_crop_candidate, bool):
+        raise ValueError("auto_crop_candidate must be a boolean.")
     clean_correction_scale_range = [0.75, 1.25]
     if correction_profile_scale_range is not None:
         clean_correction_scale_range = _validate_vector(correction_profile_scale_range, 2, "correction_profile_scale_range")
@@ -537,11 +579,31 @@ def compare_image_silhouettes(
     if candidate_image.isNull():
         raise ValueError(f"Unable to load candidate image: {candidate_image_path}")
 
-    reference_bbox = _resolve_bbox(reference_image, reference_bbox_pixels, reference_bbox_normalized, "reference")
-    candidate_bbox = _resolve_bbox(candidate_image, candidate_bbox_pixels, candidate_bbox_normalized, "candidate")
     clean_background_color = _normalize_color(background_color, "background_color") if background_color else None
-    reference_background = clean_background_color or _estimate_background(reference_image, reference_bbox)
-    candidate_background = clean_background_color or _estimate_background(candidate_image, candidate_bbox)
+    reference_search_bbox = _resolve_bbox(reference_image, reference_bbox_pixels, reference_bbox_normalized, "reference")
+    candidate_search_bbox = _resolve_bbox(candidate_image, candidate_bbox_pixels, candidate_bbox_normalized, "candidate")
+    reference_background = clean_background_color or _estimate_background(reference_image, reference_search_bbox)
+    candidate_background = clean_background_color or _estimate_background(candidate_image, candidate_search_bbox)
+    if auto_crop_reference and reference_bbox_pixels is None and reference_bbox_normalized is None:
+        reference_bbox = _auto_crop_bbox(
+            reference_image,
+            reference_search_bbox,
+            reference_background,
+            auto_crop_padding_pixels,
+            "reference_image_path",
+        )
+    else:
+        reference_bbox = reference_search_bbox
+    if auto_crop_candidate and candidate_bbox_pixels is None and candidate_bbox_normalized is None:
+        candidate_bbox = _auto_crop_bbox(
+            candidate_image,
+            candidate_search_bbox,
+            candidate_background,
+            auto_crop_padding_pixels,
+            "candidate_image_path",
+        )
+    else:
+        candidate_bbox = candidate_search_bbox
 
     reference_data = _mask_from_image(reference_image, reference_bbox, reference_background)
     candidate_data = _mask_from_image(candidate_image, candidate_bbox, candidate_background)
@@ -605,6 +667,9 @@ def compare_image_silhouettes(
         "correction_profile_smoothing_radius": correction_profile_smoothing_radius,
         "correction_profile_min_width": correction_profile_min_width,
         "correction_profile_scale_range": clean_correction_scale_range,
+        "auto_crop_reference": auto_crop_reference,
+        "auto_crop_candidate": auto_crop_candidate,
+        "auto_crop_padding_pixels": auto_crop_padding_pixels,
         "reference_crop_bbox_pixels": reference_bbox,
         "candidate_crop_bbox_pixels": candidate_bbox,
         "reference_foreground_bbox_pixels": reference_data["foreground_bbox"],
