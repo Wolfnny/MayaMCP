@@ -24,6 +24,10 @@ def compare_image_silhouettes(
     row_sample_count: int = 64,
     band_edges_normalized: List[float] = None,
     band_sample_count: int = 64,
+    correction_profile_sample_count: int = 0,
+    correction_profile_smoothing_radius: int = 1,
+    correction_profile_min_width: float = 0.02,
+    correction_profile_scale_range: List[float] = None,
     min_foreground_pixels: int = 8,
 ) -> Dict[str, Any]:
     """Compare two image silhouettes and optionally write an overlap diagnostic.
@@ -36,9 +40,10 @@ def compare_image_silhouettes(
     by a full x/y stretch. Hole filling is enabled by default so transparent or
     outlined objects can be compared as solid silhouettes. Returned metrics
     include IoU, overlap counts, aspect/centroid differences, per-row
-    silhouette width error, and optional vertical band width summaries. This is
-    useful for generic visual QA of modeled products, props, icons, sprites,
-    masks, decals, or rendered assets against reference images.
+    silhouette width error, optional vertical band width summaries, and
+    optional width correction profiles that can drive generic profile-deform
+    tools. This is useful for generic visual QA of modeled products, props,
+    icons, sprites, masks, decals, or rendered assets against reference images.
     """
     import math
     import os
@@ -367,6 +372,76 @@ def compare_image_silhouettes(
             })
         return bands
 
+    def _smooth_values(values, radius):
+        if radius <= 0:
+            return values[:]
+        smoothed = []
+        for index in range(len(values)):
+            start = max(0, index - radius)
+            end = min(len(values) - 1, index + radius)
+            window = values[start:end + 1]
+            smoothed.append(sum(window) / float(len(window)))
+        return smoothed
+
+    def _width_correction_profile(reference_mask, candidate_mask, reference_bbox, candidate_bbox):
+        if correction_profile_sample_count <= 0:
+            return {
+                "samples_top_to_bottom": [],
+                "axis_scale_profile_points": [],
+                "image_scale_profile_points": [],
+            }
+
+        top = min(reference_bbox[1], candidate_bbox[1])
+        bottom = max(reference_bbox[3], candidate_bbox[3])
+        if bottom <= top:
+            return {
+                "samples_top_to_bottom": [],
+                "axis_scale_profile_points": [],
+                "image_scale_profile_points": [],
+            }
+
+        scale_min, scale_max = clean_correction_scale_range
+        samples = []
+        raw_scales = []
+        for index in range(correction_profile_sample_count):
+            t = index / float(max(1, correction_profile_sample_count - 1))
+            row = int(round(top + t * (bottom - top)))
+            reference_width = _row_width(reference_mask, row)
+            candidate_width = _row_width(candidate_mask, row)
+            valid = reference_width >= correction_profile_min_width and candidate_width >= correction_profile_min_width
+            scale = reference_width / candidate_width if valid else 1.0
+            scale = _clamp(scale, scale_min, scale_max)
+            raw_scales.append(scale)
+            samples.append({
+                "row": row,
+                "row_normalized_canvas": 0.0 if compare_height == 1 else row / float(compare_height - 1),
+                "row_normalized_profile": t,
+                "axis_normalized_profile": 1.0 - t,
+                "reference_width": reference_width,
+                "candidate_width": candidate_width,
+                "signed_width_error": candidate_width - reference_width,
+                "raw_scale": scale,
+                "valid": valid,
+            })
+
+        smoothed_scales = _smooth_values(raw_scales, correction_profile_smoothing_radius)
+        for index, sample in enumerate(samples):
+            sample["scale"] = smoothed_scales[index]
+
+        image_profile = [
+            [sample["row_normalized_profile"], sample["scale"]]
+            for sample in samples
+        ]
+        axis_profile = [
+            [sample["axis_normalized_profile"], sample["scale"]]
+            for sample in reversed(samples)
+        ]
+        return {
+            "samples_top_to_bottom": samples,
+            "axis_scale_profile_points": axis_profile,
+            "image_scale_profile_points": image_profile,
+        }
+
     def _write_overlay(path, reference_mask, candidate_mask):
         image = QImage(compare_width, compare_height, QImage.Format_ARGB32)
         for y in range(compare_height):
@@ -415,6 +490,22 @@ def compare_image_silhouettes(
     compare_height = _validate_int(compare_height, "compare_height", 8)
     row_sample_count = _validate_int(row_sample_count, "row_sample_count", 2)
     band_sample_count = _validate_int(band_sample_count, "band_sample_count", 2)
+    correction_profile_sample_count = _validate_int(correction_profile_sample_count, "correction_profile_sample_count", 0)
+    if correction_profile_sample_count == 1:
+        raise ValueError("correction_profile_sample_count must be 0 or an integer greater than or equal to 2.")
+    correction_profile_smoothing_radius = _validate_int(
+        correction_profile_smoothing_radius,
+        "correction_profile_smoothing_radius",
+        0,
+    )
+    correction_profile_min_width = _validate_scalar(correction_profile_min_width, "correction_profile_min_width")
+    if correction_profile_min_width < 0.0:
+        raise ValueError("correction_profile_min_width must be greater than or equal to zero.")
+    clean_correction_scale_range = [0.75, 1.25]
+    if correction_profile_scale_range is not None:
+        clean_correction_scale_range = _validate_vector(correction_profile_scale_range, 2, "correction_profile_scale_range")
+    if clean_correction_scale_range[0] <= 0.0 or clean_correction_scale_range[1] <= clean_correction_scale_range[0]:
+        raise ValueError("correction_profile_scale_range must be [min_scale, max_scale] with 0 < min < max.")
     min_foreground_pixels = _validate_int(min_foreground_pixels, "min_foreground_pixels", 1)
     clean_band_edges = None
     if band_edges_normalized is not None:
@@ -478,6 +569,12 @@ def compare_image_silhouettes(
     recall = intersection / float(reference_count) if reference_count else 0.0
     width_metrics = _row_width_errors(reference_mask, candidate_mask)
     band_metrics = _band_width_errors(reference_mask, candidate_mask, clean_band_edges) if clean_band_edges else []
+    correction_profile = _width_correction_profile(
+        reference_mask,
+        candidate_mask,
+        reference_canvas_bbox,
+        candidate_canvas_bbox,
+    )
 
     if output_path:
         output_path = os.path.normpath(output_path)
@@ -504,6 +601,10 @@ def compare_image_silhouettes(
         "compare_height": compare_height,
         "band_edges_normalized": clean_band_edges,
         "band_sample_count": band_sample_count,
+        "correction_profile_sample_count": correction_profile_sample_count,
+        "correction_profile_smoothing_radius": correction_profile_smoothing_radius,
+        "correction_profile_min_width": correction_profile_min_width,
+        "correction_profile_scale_range": clean_correction_scale_range,
         "reference_crop_bbox_pixels": reference_bbox,
         "candidate_crop_bbox_pixels": candidate_bbox,
         "reference_foreground_bbox_pixels": reference_data["foreground_bbox"],
@@ -537,4 +638,5 @@ def compare_image_silhouettes(
         "mean_signed_width_error": width_metrics["mean_signed_width_error"],
         "row_width_samples": width_metrics["samples"],
         "band_width_metrics": band_metrics,
+        "correction_profile": correction_profile,
     }
