@@ -20,7 +20,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | get_object_attributes | Get a list of attributes on a Maya object. | 
 | set_object_attribute | Set an object's scalar, string, boolean, or 3-channel vector attribute, optionally disconnecting incoming attribute links first. |
 | scene_new | Create a new scene in Maya. Use the force argument to force a new scene when an existing scene is loaded and has been modified. |
-| scene_open | Load in a scene into Maya. | 
+| scene_open | Load in a scene into Maya, optionally forcing open when unsaved changes exist. |
 | scene_save | Save the current scene. If the filename is not specified, it will save it as its current name. |
 | select_object | Select an object in the scene. |
 | setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image; omitted targets auto-frame visible scene geometry. |
