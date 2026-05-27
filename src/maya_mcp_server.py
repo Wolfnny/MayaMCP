@@ -56,7 +56,8 @@ class MayaConnection:
 
     @staticmethod
     def _encode_python_to_mel_python(python_code:str) -> str:
-        mel = python_code.replace('"', '\\"')
+        mel = python_code.replace('\\', '\\\\')
+        mel = mel.replace('"', '\\"')
         mel = mel.replace('\n', '\\n')
         return f'python("{mel}")'
 
@@ -253,10 +254,7 @@ def load_maya_tool_source(
     results += f"\n_mcp_maya_results = _mcp_maya_scope("
     params = []
     for k,v in vars.items():
-        if isinstance(v, str):
-            params.append(f"{k}='{v}'")
-        else:
-            params.append(f"{k}={v}")
+        params.append(f"{k}={repr(v)}")
     results += ','.join(params)
     results += ")\n\n"
 
