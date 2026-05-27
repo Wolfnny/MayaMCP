@@ -41,6 +41,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | extract_image_contours | Extract image-mask component contours and optionally create planar or cylindrical Maya curves. |
 | create_textured_label | Create a UV-mapped curved label mesh around a cylindrical or profiled lathed object and apply an image texture directly through UVs, with optional alpha. |
 | create_curved_text | Create text curves, raised tube geometry, or filled polygon text conformed to cylindrical surfaces. |
+| create_tube_mesh_from_curves | Create polygon tube geometry along curves or point paths for trim, seams, strokes, wires, pipes, or raised outlines. |
 | create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles, with optional smooth profile resampling. |
 | create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles, with optional smooth profile resampling. |
 | create_revolved_liquid_volume | Create inset axisymmetric liquid fill volumes with top and bottom caps inside lathed vessels. |
