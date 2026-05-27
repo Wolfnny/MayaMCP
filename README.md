@@ -39,6 +39,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles, with optional smooth profile resampling. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
+| localized_radial_pattern_deform | Apply localized repeated dimples, raised dots, or embossed/debossed radial features to cylindrical meshes. |
 | uv_operations | List, create, switch, project, normalize, and lay out UV sets for polygon meshes. |
 | create_curve | Generate NURBS curves for various shapes (line, circle, spiral, helix, star, gear, etc.) |
 | curve_modeling | Create geometry using curve-based modeling techniques (extrude, loft, revolve, sweep, etc.) |
