@@ -60,7 +60,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | uv_texture_deform | Deform UV-mapped polygon meshes by sampling an image through vertex UVs along normals, axes, or radial directions. |
 | polar_mesh_deform | Apply coupled angular radial and axial deformation for petal bases, star supports, lobed feet, or cyclic punt details. |
 | localized_radial_pattern_deform | Apply localized repeated dimples, raised dots, or embossed/debossed radial features to cylindrical meshes. |
-| trim_mesh_by_texture | Delete polygon faces by sampling image channels through mesh UVs for alpha cutouts, decals, panels, vents, or masks. |
+| trim_mesh_by_texture | Delete polygon faces by sampling image channels through mesh UVs, with configurable face sample points, for alpha cutouts, decals, panels, vents, or masks. |
 | uv_operations | List, create, switch, project, normalize, and lay out UV sets for polygon meshes. |
 | create_curve | Generate NURBS curves for various shapes (line, circle, spiral, helix, star, gear, etc.) |
 | curve_modeling | Create geometry using curve-based modeling techniques (extrude, loft, revolve, sweep, etc.) |

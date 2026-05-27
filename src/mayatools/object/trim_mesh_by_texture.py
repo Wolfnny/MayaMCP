@@ -14,15 +14,20 @@ def trim_mesh_by_texture(
     min_keep_faces: int = 1,
     dry_run: bool = False,
     smooth: bool = True,
+    uv_sample_mode: str = "center",
+    sample_aggregation: str = "mean",
 ) -> Dict[str, Any]:
     """Delete polygon faces by sampling an image through mesh UVs.
 
-    Each face is sampled at its average UV coordinate against the provided
-    image. Faces whose sampled channel falls below or above the threshold can
-    be removed. This is useful for generic alpha-cut labels, decals, panels,
-    cloth cards, leaf cards, vents, grates, masks, and other textured meshes
-    where transparent or masked texture regions should become real cutout
-    geometry instead of relying on viewport or material transparency sorting.
+    Each face is sampled through its UVs against the provided image. Faces
+    whose sampled channel falls below or above the threshold can be removed.
+    uv_sample_mode controls whether each face is sampled at its center, UV
+    vertices, or both. sample_aggregation controls whether those samples are
+    combined by mean, min, or max before thresholding. This is useful for
+    generic alpha-cut labels, decals, panels, cloth cards, leaf cards, vents,
+    grates, masks, and other textured meshes where transparent or masked
+    texture regions should become real cutout geometry instead of relying on
+    viewport or material transparency sorting.
     """
     import math
     import os
@@ -119,7 +124,7 @@ def trim_mesh_by_texture(
             return _rgb_to_hsv(red, green, blue)[1]
         return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 
-    def _face_uv_center(face):
+    def _face_uv_samples(face):
         uv_components = cmds.polyListComponentConversion(face, fromFace=True, toUV=True) or []
         uv_components = cmds.ls(uv_components, flatten=True) or []
         if not uv_components:
@@ -127,9 +132,25 @@ def trim_mesh_by_texture(
         values = cmds.polyEditUV(uv_components, query=True) or []
         if len(values) < 2:
             return None
-        us = values[0::2]
-        vs = values[1::2]
-        return sum(us) / float(len(us)), sum(vs) / float(len(vs))
+        pairs = list(zip(values[0::2], values[1::2]))
+        if not pairs:
+            return None
+        center = (
+            sum(pair[0] for pair in pairs) / float(len(pairs)),
+            sum(pair[1] for pair in pairs) / float(len(pairs)),
+        )
+        if uv_sample_mode == "center":
+            return [center]
+        if uv_sample_mode == "vertices":
+            return pairs
+        return [center] + pairs
+
+    def _aggregate_values(values):
+        if sample_aggregation == "min":
+            return min(values)
+        if sample_aggregation == "max":
+            return max(values)
+        return sum(values) / float(len(values))
 
     if not cmds.objExists(object_name):
         raise ValueError(f"Object does not exist: {object_name}")
@@ -145,6 +166,12 @@ def trim_mesh_by_texture(
     sample_channel = sample_channel.lower().strip()
     if sample_channel not in {"alpha", "luminance", "red", "green", "blue", "value", "saturation"}:
         raise ValueError("sample_channel must be one of alpha, luminance, red, green, blue, value, or saturation.")
+    uv_sample_mode = uv_sample_mode.lower().strip()
+    if uv_sample_mode not in {"center", "vertices", "center_vertices"}:
+        raise ValueError("uv_sample_mode must be one of center, vertices, or center_vertices.")
+    sample_aggregation = sample_aggregation.lower().strip()
+    if sample_aggregation not in {"mean", "min", "max"}:
+        raise ValueError("sample_aggregation must be one of mean, min, or max.")
 
     shapes = cmds.listRelatives(object_name, shapes=True, fullPath=True) or []
     if cmds.objectType(object_name) == "mesh":
@@ -178,19 +205,28 @@ def trim_mesh_by_texture(
     delete_faces = []
     skipped_faces = []
     sample_values = []
+    sample_counts = []
     for index in range(face_count):
         face = f"{object_name}.f[{index}]"
-        uv_center = _face_uv_center(face)
-        if uv_center is None:
+        uv_samples = _face_uv_samples(face)
+        if not uv_samples:
             skipped_faces.append(face)
             continue
-        value = _channel_value(_sample_bilinear(image, uv_center[0], uv_center[1]))
+        values = [
+            _channel_value(_sample_bilinear(image, uv[0], uv[1]))
+            for uv in uv_samples
+        ]
+        value = _aggregate_values(values)
         should_delete = value < threshold if delete_below else value > threshold
         sample_values.append(value)
+        sample_counts.append(len(values))
         face_record = {
             "face": face,
-            "uv": [uv_center[0], uv_center[1]],
+            "uv": [uv_samples[0][0], uv_samples[0][1]],
             "value": value,
+            "sample_count": len(values),
+            "sample_min": min(values),
+            "sample_max": max(values),
             "delete": should_delete,
         }
         sampled_faces.append(face_record)
@@ -230,12 +266,16 @@ def trim_mesh_by_texture(
         "wrap_u": bool(wrap_u),
         "wrap_v": bool(wrap_v),
         "dry_run": bool(dry_run),
+        "uv_sample_mode": uv_sample_mode,
+        "sample_aggregation": sample_aggregation,
         "face_count_before": face_count,
         "sampled_face_count": len(sampled_faces),
         "skipped_face_count": len(skipped_faces),
         "matched_face_count": len(delete_faces),
         "deleted_face_count": len(deleted_faces),
         "face_count_after": face_count if dry_run else face_count - len(deleted_faces),
+        "min_samples_per_face": min(sample_counts) if sample_counts else 0,
+        "max_samples_per_face": max(sample_counts) if sample_counts else 0,
         "min_sample_value": min(sample_values) if sample_values else 0.0,
         "max_sample_value": max(sample_values) if sample_values else 0.0,
         "mean_sample_value": sum(sample_values) / float(len(sample_values)) if sample_values else 0.0,
