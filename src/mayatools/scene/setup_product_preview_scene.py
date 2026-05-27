@@ -56,9 +56,47 @@ def setup_product_preview_scene(
             except Exception:
                 pass
 
+    def _is_visible(node):
+        current = node
+        while current:
+            try:
+                if cmds.attributeQuery("visibility", node=current, exists=True) and not cmds.getAttr(f"{current}.visibility"):
+                    return False
+            except Exception:
+                pass
+            parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+            current = parents[0] if parents else None
+        return True
+
+    def _shape_parent_targets(shape_types):
+        targets = []
+        seen = set()
+        for shape_type in shape_types:
+            for shape in cmds.ls(type=shape_type, long=True) or []:
+                try:
+                    if cmds.attributeQuery("intermediateObject", node=shape, exists=True) and cmds.getAttr(f"{shape}.intermediateObject"):
+                        continue
+                except Exception:
+                    pass
+                parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+                if not parents:
+                    continue
+                parent = parents[0]
+                if parent in seen or not _is_visible(shape) or not _is_visible(parent):
+                    continue
+                seen.add(parent)
+                targets.append(parent)
+        return targets
+
+    def _default_targets():
+        mesh_targets = _shape_parent_targets(["mesh"])
+        if mesh_targets:
+            return mesh_targets
+        return _shape_parent_targets(["nurbsCurve", "bezierCurve"])
+
     def _normalize_targets(targets):
         if targets is None:
-            return []
+            return _default_targets()
         if isinstance(targets, str):
             targets = [targets]
         if not isinstance(targets, list) or not all(isinstance(item, str) for item in targets):
@@ -82,6 +120,18 @@ def setup_product_preview_scene(
             bbox[4] = max(bbox[4], obj_bbox[4])
             bbox[5] = max(bbox[5], obj_bbox[5])
         return bbox
+
+    def _frame_distance(size, focal_length_value, distance_multiplier_value):
+        max_size = max(size)
+        horizontal_aperture_mm = 36.0
+        vertical_aperture_mm = 24.0
+        horizontal_fov = 2.0 * math.atan(horizontal_aperture_mm / (2.0 * focal_length_value))
+        vertical_fov = 2.0 * math.atan(vertical_aperture_mm / (2.0 * focal_length_value))
+        distance_for_width = (size[0] * 0.5) / max(1e-6, math.tan(horizontal_fov * 0.5))
+        distance_for_height = (size[1] * 0.5) / max(1e-6, math.tan(vertical_fov * 0.5))
+        fov_distance = max(distance_for_width, distance_for_height) * 1.15 + size[2] * 0.5
+        multiplier_distance = max_size * distance_multiplier_value
+        return max(2.0, fov_distance, multiplier_distance)
 
     def _aim_camera(camera_transform, target):
         locator = cmds.spaceLocator(name=f"{name}_camera_target_tmp")[0]
@@ -129,11 +179,11 @@ def setup_product_preview_scene(
     else:
         target_position = _validate_vector(target_position, 3, "target_position")
     if camera_position is None:
-        max_size = max(bbox_size)
+        camera_distance = _frame_distance(bbox_size, focal_length, distance_multiplier)
         camera_position = [
             target_position[0],
             target_position[1] + bbox_size[1] * 0.05,
-            target_position[2] + max(2.0, max_size * distance_multiplier),
+            target_position[2] + camera_distance,
         ]
     else:
         camera_position = _validate_vector(camera_position, 3, "camera_position")

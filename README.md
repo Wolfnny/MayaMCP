@@ -23,7 +23,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | scene_open | Load in a scene into Maya. | 
 | scene_save | Save the current scene. If the filename is not specified, it will save it as its current name. |
 | select_object | Select an object in the scene. |
-| setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image. |
+| setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image; omitted targets auto-frame visible scene geometry. |
 | create_reference_image_plane | Create a textured world-space reference image plane with optional alpha fitted to target objects for silhouette, proportion, or layout comparison. |
 | compare_image_silhouettes | Compare two image silhouettes with normalized overlay, IoU, centroid, aspect, row-width, vertical-band metrics, and optional profile-correction output. |
 
@@ -36,6 +36,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_material | Create and assign materials with various types (lambert, phong, wood, marble, chrome, glass, etc.) |
 | create_pbr_material | Create generic physically-oriented materials with glass, liquid, metal, plastic, rubber, and ceramic presets. |
 | create_textured_material | Create an image-textured material, connect file and place2dTexture nodes, and optionally assign it to UV-mapped objects. |
+| refresh_file_textures | Refresh Maya file texture nodes, re-enable file loading, touch texture paths, and reset textured viewport display. |
 | extract_image_region_texture | Crop explicitly or by foreground auto-bbox, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, silhouettes, or trim. |
 | extract_image_matte_texture | Extract cropped textures with alpha mattes derived from color, hue, foreground, or alpha image regions. |
 | extract_image_detail_mask | Extract dark, bright, absolute-contrast, or edge detail masks from reference images for texture cleanup or geometry relief. |
@@ -52,6 +53,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
 | radial_profile_deform | Apply non-periodic axial radius scale, offset, or target-radius profiles to cylindrical or lathed polygon meshes. |
 | linear_profile_deform | Apply non-radial axial coordinate profiles for tapering decals, panels, ribbons, cards, labels, and other mesh layers. |
+| fit_objects_to_bounds | Fit one or more mesh or curve objects to target world-space bounds by scaling points or transforms. |
 | cylindrical_component_deform | Detect connected components in image masks and apply fitted local relief features to cylindrical or lathed meshes. |
 | cylindrical_image_deform | Deform a cylindrical or lathed mesh from an image sampled in angle/height space for photo-driven relief or emboss/deboss details. |
 | uv_texture_deform | Deform UV-mapped polygon meshes by sampling an image through vertex UVs along normals, axes, or radial directions. |
