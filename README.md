@@ -40,6 +40,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles, with optional smooth profile resampling. |
 | create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles, with optional smooth profile resampling. |
 | create_revolved_liquid_volume | Create inset axisymmetric liquid fill volumes with top and bottom caps inside lathed vessels. |
+| extract_revolved_profile_from_image | Extract a lathe-ready radius/height profile from an image silhouette for reference-driven revolved modeling. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
 | polar_mesh_deform | Apply coupled angular radial and axial deformation for petal bases, star supports, lobed feet, or cyclic punt details. |
