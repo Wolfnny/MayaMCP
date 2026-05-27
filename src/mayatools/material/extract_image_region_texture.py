@@ -10,6 +10,9 @@ def extract_image_region_texture(
     output_width: int = 0,
     output_height: int = 0,
     stretch_to_output: bool = True,
+    horizontal_remap: str = "none",
+    source_arc_degrees: float = 120.0,
+    remap_center_x: float = 0.5,
     mask_background: bool = False,
     background_color: List[float] = None,
     background_tolerance: float = 0.06,
@@ -18,10 +21,12 @@ def extract_image_region_texture(
     """Crop an image reference region into a reusable texture file.
 
     The crop can be defined in pixels or normalized image coordinates, padded,
-    optionally resized, and optionally written with background-colored pixels
-    made transparent. The output is intended for generic reference-driven
-    texturing workflows such as labels, panels, decals, caps, badges, or trim.
+    optionally resized, optionally remapped from a front cylindrical projection,
+    and optionally written with background-colored pixels made transparent. The
+    output is intended for generic reference-driven texturing workflows such as
+    labels, panels, decals, caps, badges, or trim.
     """
+    import math
     import os
 
     try:
@@ -101,6 +106,65 @@ def extract_image_region_texture(
         painter.end()
         return canvas
 
+    def _make_color(red, green, blue, alpha):
+        color = QColor()
+        color.setRgbF(
+            max(0.0, min(1.0, red)),
+            max(0.0, min(1.0, green)),
+            max(0.0, min(1.0, blue)),
+            max(0.0, min(1.0, alpha)),
+        )
+        return color
+
+    def _sample_bilinear(image, x, y):
+        width = image.width()
+        height = image.height()
+        x = max(0.0, min(float(width - 1), x))
+        y = max(0.0, min(float(height - 1), y))
+        x0 = int(math.floor(x))
+        y0 = int(math.floor(y))
+        x1 = min(width - 1, x0 + 1)
+        y1 = min(height - 1, y0 + 1)
+        tx = x - x0
+        ty = y - y0
+        c00 = _pixel_rgb_alpha(image, x0, y0)
+        c10 = _pixel_rgb_alpha(image, x1, y0)
+        c01 = _pixel_rgb_alpha(image, x0, y1)
+        c11 = _pixel_rgb_alpha(image, x1, y1)
+        channels = []
+        for index in range(4):
+            top = c00[index] * (1.0 - tx) + c10[index] * tx
+            bottom = c01[index] * (1.0 - tx) + c11[index] * tx
+            channels.append(top * (1.0 - ty) + bottom * ty)
+        return _make_color(channels[0], channels[1], channels[2], channels[3])
+
+    def _remap_cylindrical_front(image, target_width, target_height, arc_degrees, center_x):
+        arc_radians = math.radians(arc_degrees)
+        half_arc = arc_radians * 0.5
+        sin_half_arc = math.sin(half_arc)
+        if sin_half_arc <= 1e-9:
+            raise ValueError("source_arc_degrees is too small for cylindrical_front remap.")
+        source_width = image.width()
+        source_height = image.height()
+        projected_center = center_x * float(source_width - 1)
+        left_span = max(1e-9, projected_center)
+        right_span = max(1e-9, float(source_width - 1) - projected_center)
+        remapped = QImage(target_width, target_height, QImage.Format_ARGB32)
+        remapped.fill(QColor(0, 0, 0, 0))
+        for y in range(target_height):
+            v = 0.0 if target_height == 1 else y / float(target_height - 1)
+            source_y = v * float(source_height - 1)
+            for x in range(target_width):
+                u = 0.0 if target_width == 1 else x / float(target_width - 1)
+                theta = (u - 0.5) * arc_radians
+                projected = math.sin(theta) / sin_half_arc
+                if projected < 0.0:
+                    source_x = projected_center + projected * left_span
+                else:
+                    source_x = projected_center + projected * right_span
+                remapped.setPixelColor(x, y, _sample_bilinear(image, source_x, source_y))
+        return remapped
+
     if not image_path:
         raise ValueError("image_path is required.")
     normalized_image_path = os.path.normpath(image_path)
@@ -114,6 +178,19 @@ def extract_image_region_texture(
     padding_pixels = _validate_int(padding_pixels, "padding_pixels", 0)
     output_width = _validate_int(output_width, "output_width", 0)
     output_height = _validate_int(output_height, "output_height", 0)
+    horizontal_remap = horizontal_remap.lower().strip()
+    if horizontal_remap not in {"none", "cylindrical_front"}:
+        raise ValueError("horizontal_remap must be one of none or cylindrical_front.")
+    if not _is_number(source_arc_degrees):
+        raise ValueError("source_arc_degrees must be numeric.")
+    source_arc_degrees = float(source_arc_degrees)
+    if source_arc_degrees <= 0.0 or source_arc_degrees >= 180.0:
+        raise ValueError("source_arc_degrees must be greater than 0 and less than 180.")
+    if not _is_number(remap_center_x):
+        raise ValueError("remap_center_x must be numeric.")
+    remap_center_x = float(remap_center_x)
+    if remap_center_x <= 0.0 or remap_center_x >= 1.0:
+        raise ValueError("remap_center_x must be greater than 0 and less than 1.")
     if not _is_number(background_tolerance):
         raise ValueError("background_tolerance must be numeric.")
     background_tolerance = float(background_tolerance)
@@ -178,10 +255,14 @@ def extract_image_region_texture(
             final_width = max(1, int(round(cropped.width() * (output_height / float(cropped.height())))))
         if output_height == 0:
             final_height = max(1, int(round(cropped.height() * (output_width / float(cropped.width())))))
-        if stretch_to_output:
+        if horizontal_remap == "cylindrical_front":
+            cropped = _remap_cylindrical_front(cropped, final_width, final_height, source_arc_degrees, remap_center_x)
+        elif stretch_to_output:
             cropped = cropped.scaled(final_width, final_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         else:
             cropped = _scale_keep_aspect(cropped, final_width, final_height)
+    elif horizontal_remap == "cylindrical_front":
+        cropped = _remap_cylindrical_front(cropped, final_width, final_height, source_arc_degrees, remap_center_x)
 
     if output_path is None:
         base_name = os.path.splitext(os.path.basename(normalized_image_path))[0] or "image"
@@ -214,6 +295,9 @@ def extract_image_region_texture(
         "crop_height": crop_height,
         "output_width": cropped.width(),
         "output_height": cropped.height(),
+        "horizontal_remap": horizontal_remap,
+        "source_arc_degrees": source_arc_degrees,
+        "remap_center_x": remap_center_x,
         "mask_background": mask_background,
         "background_color": clean_background_color,
         "background_tolerance": background_tolerance,
