@@ -17,6 +17,7 @@ def create_textured_label(
     segments_v: int = 4,
     offset: float = 0.02,
     material_name: str = None,
+    use_alpha: bool = False,
 ) -> Dict[str, Any]:
     """Create a UV-mapped curved label mesh and apply an image texture to it.
 
@@ -24,7 +25,8 @@ def create_textured_label(
     a generated plane, so the image texture is mapped directly to the label UVs
     instead of being approximated with floating text geometry. If surface_profile
     is provided as [height, radius] points, the label conforms to that lathed
-    profile instead of using a constant cylindrical radius.
+    profile instead of using a constant cylindrical radius. When use_alpha is
+    true, texture transparency is connected to the label material.
     """
     import math
     import os
@@ -211,6 +213,15 @@ def create_textured_label(
 
     cmds.setAttr(f"{file_node}.fileTextureName", normalized_texture_path, type="string")
     cmds.connectAttr(f"{file_node}.outColor", f"{shader}.color", force=True)
+    alpha_node = None
+    if use_alpha and cmds.attributeQuery("transparency", node=shader, exists=True):
+        if cmds.attributeQuery("outAlpha", node=file_node, exists=True):
+            alpha_node = cmds.shadingNode("reverse", asUtility=True, name=f"{material_name}_alpha_reverse")
+            for channel in ["X", "Y", "Z"]:
+                cmds.connectAttr(f"{file_node}.outAlpha", f"{alpha_node}.input{channel}", force=True)
+            cmds.connectAttr(f"{alpha_node}.output", f"{shader}.transparency", force=True)
+        elif cmds.attributeQuery("outTransparency", node=file_node, exists=True):
+            cmds.connectAttr(f"{file_node}.outTransparency", f"{shader}.transparency", force=True)
     shading_group = cmds.sets(name=f"{material_name}SG", empty=True, renderable=True, noSurfaceShader=True)
     cmds.connectAttr(f"{shader}.outColor", f"{shading_group}.surfaceShader", force=True)
     cmds.sets(label, edit=True, forceElement=shading_group)
@@ -221,6 +232,7 @@ def create_textured_label(
         "shader": shader,
         "file_node": file_node,
         "place2d": place2d,
+        "alpha_node": alpha_node,
         "shading_group": shading_group,
         "texture_path": normalized_texture_path,
         "radius": radius,
@@ -230,4 +242,5 @@ def create_textured_label(
         "angle_end": angle_end,
         "segments_u": segments_u,
         "segments_v": segments_v,
+        "use_alpha": bool(use_alpha),
     }

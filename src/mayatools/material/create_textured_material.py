@@ -95,8 +95,15 @@ def create_textured_material(
 
     cmds.connectAttr(f"{file_node}.outColor", f"{shader}.{target_attribute}", force=True)
 
+    alpha_node = None
     if use_alpha and material_type != "surfaceShader" and cmds.attributeQuery("transparency", node=shader, exists=True):
-        cmds.connectAttr(f"{file_node}.outTransparency", f"{shader}.transparency", force=True)
+        if cmds.attributeQuery("outAlpha", node=file_node, exists=True):
+            alpha_node = cmds.shadingNode("reverse", asUtility=True, name=f"{name}_alpha_reverse")
+            for channel in ["X", "Y", "Z"]:
+                cmds.connectAttr(f"{file_node}.outAlpha", f"{alpha_node}.input{channel}", force=True)
+            cmds.connectAttr(f"{alpha_node}.output", f"{shader}.transparency", force=True)
+        elif cmds.attributeQuery("outTransparency", node=file_node, exists=True):
+            cmds.connectAttr(f"{file_node}.outTransparency", f"{shader}.transparency", force=True)
 
     shading_group = cmds.sets(name=f"{name}SG", empty=True, renderable=True, noSurfaceShader=True)
     source_attr = "outColor" if material_type != "surfaceShader" else "outColor"
@@ -117,6 +124,7 @@ def create_textured_material(
         "shader": shader,
         "file_node": file_node,
         "place2d": place2d,
+        "alpha_node": alpha_node,
         "shading_group": shading_group,
         "texture_path": normalized_texture_path,
         "assigned_to": assigned_to,

@@ -35,9 +35,9 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_material | Create and assign materials with various types (lambert, phong, wood, marble, chrome, glass, etc.) |
 | create_pbr_material | Create generic physically-oriented materials with glass, liquid, metal, plastic, rubber, and ceramic presets. |
 | create_textured_material | Create an image-textured material, connect file and place2dTexture nodes, and optionally assign it to UV-mapped objects. |
-| extract_image_region_texture | Crop and optionally remap a reference image region into a reusable texture file for labels, decals, panels, caps, or trim. |
+| extract_image_region_texture | Crop, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, or trim. |
 | extract_image_detail_mask | Extract dark, bright, absolute-contrast, or edge detail masks from reference images for texture cleanup or geometry relief. |
-| create_textured_label | Create a UV-mapped curved label mesh around a cylindrical or profiled lathed object and apply an image texture directly through UVs. |
+| create_textured_label | Create a UV-mapped curved label mesh around a cylindrical or profiled lathed object and apply an image texture directly through UVs, with optional alpha. |
 | create_curved_text | Create text curves, raised tube geometry, or filled polygon text conformed to cylindrical surfaces. |
 | create_revolved_mesh | Create UV-mapped lathed polygon meshes from radius/height profiles, with optional smooth profile resampling. |
 | create_revolved_shell | Create UV-mapped hollow lathed shells from outer and inner profiles, with optional smooth profile resampling. |
@@ -46,6 +46,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | extract_image_color_regions | Extract connected color or foreground regions from an image reference and report normalized and product-height-space bounds. |
 | create_cylindrical_detail_band | Create UV-mapped cylindrical bands with generic ridges, grooves, corrugation, knurling, or thread-like detail. |
 | radial_mesh_deform | Apply generic periodic radial grooves, ridges, flutes, or corrugation to polygon meshes. |
+| cylindrical_component_deform | Detect connected components in image masks and apply fitted local relief features to cylindrical or lathed meshes. |
 | cylindrical_image_deform | Deform a cylindrical or lathed mesh from an image sampled in angle/height space for photo-driven relief or emboss/deboss details. |
 | polar_mesh_deform | Apply coupled angular radial and axial deformation for petal bases, star supports, lobed feet, or cyclic punt details. |
 | localized_radial_pattern_deform | Apply localized repeated dimples, raised dots, or embossed/debossed radial features to cylindrical meshes. |

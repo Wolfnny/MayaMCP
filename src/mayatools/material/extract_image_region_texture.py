@@ -14,6 +14,7 @@ def extract_image_region_texture(
     source_arc_degrees: float = 120.0,
     remap_center_x: float = 0.5,
     mask_background: bool = False,
+    mask_background_mode: str = "color",
     background_color: List[float] = None,
     background_tolerance: float = 0.06,
     overwrite: bool = True,
@@ -22,9 +23,10 @@ def extract_image_region_texture(
 
     The crop can be defined in pixels or normalized image coordinates, padded,
     optionally resized, optionally remapped from a front cylindrical projection,
-    and optionally written with background-colored pixels made transparent. The
-    output is intended for generic reference-driven texturing workflows such as
-    labels, panels, decals, caps, badges, or trim.
+    and optionally written with background pixels made transparent. Background
+    masking can remove all matching pixels or only flood-fill matching pixels
+    connected to crop edges. The output is intended for generic reference-driven
+    texturing workflows such as labels, panels, decals, caps, badges, or trim.
     """
     import math
     import os
@@ -90,6 +92,51 @@ def extract_image_region_texture(
             values = sorted(point[index] for point in sample_points)
             channels.append(values[len(values) // 2])
         return channels
+
+    def _is_background_pixel(image, x, y, color, tolerance):
+        red, green, blue, alpha = _pixel_rgb_alpha(image, x, y)
+        if alpha <= 0.0:
+            return False
+        return _color_distance([red, green, blue], color) <= tolerance
+
+    def _mask_background_by_color(image, color, tolerance):
+        for y in range(image.height()):
+            for x in range(image.width()):
+                if _is_background_pixel(image, x, y, color, tolerance):
+                    pixel = image.pixelColor(x, y)
+                    pixel.setAlpha(0)
+                    image.setPixelColor(x, y, pixel)
+
+    def _mask_background_by_flood_fill(image, color, tolerance):
+        width = image.width()
+        height = image.height()
+        visited = [bytearray(width) for _ in range(height)]
+        stack = []
+        for x in range(width):
+            stack.append((x, 0))
+            stack.append((x, height - 1))
+        for y in range(1, height - 1):
+            stack.append((0, y))
+            stack.append((width - 1, y))
+
+        while stack:
+            x, y = stack.pop()
+            if visited[y][x]:
+                continue
+            visited[y][x] = 1
+            if not _is_background_pixel(image, x, y, color, tolerance):
+                continue
+            pixel = image.pixelColor(x, y)
+            pixel.setAlpha(0)
+            image.setPixelColor(x, y, pixel)
+            if x > 0:
+                stack.append((x - 1, y))
+            if x < width - 1:
+                stack.append((x + 1, y))
+            if y > 0:
+                stack.append((x, y - 1))
+            if y < height - 1:
+                stack.append((x, y + 1))
 
     def _scale_keep_aspect(image, target_width, target_height):
         scaled = image.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -198,6 +245,9 @@ def extract_image_region_texture(
         background_tolerance /= 255.0
     if background_tolerance < 0.0:
         raise ValueError("background_tolerance must be greater than or equal to zero.")
+    mask_background_mode = mask_background_mode.lower().strip()
+    if mask_background_mode not in {"color", "flood_fill"}:
+        raise ValueError("mask_background_mode must be one of color or flood_fill.")
 
     image = QImage(normalized_image_path)
     if image.isNull():
@@ -238,15 +288,10 @@ def extract_image_region_texture(
     clean_background_color = None
     if mask_background:
         clean_background_color = _validate_color(background_color, "background_color") if background_color else _estimate_background(cropped)
-        for y in range(cropped.height()):
-            for x in range(cropped.width()):
-                red, green, blue, alpha = _pixel_rgb_alpha(cropped, x, y)
-                if alpha <= 0.0:
-                    continue
-                if _color_distance([red, green, blue], clean_background_color) <= background_tolerance:
-                    color = cropped.pixelColor(x, y)
-                    color.setAlpha(0)
-                    cropped.setPixelColor(x, y, color)
+        if mask_background_mode == "flood_fill":
+            _mask_background_by_flood_fill(cropped, clean_background_color, background_tolerance)
+        else:
+            _mask_background_by_color(cropped, clean_background_color, background_tolerance)
 
     final_width = output_width or cropped.width()
     final_height = output_height or cropped.height()
@@ -299,6 +344,7 @@ def extract_image_region_texture(
         "source_arc_degrees": source_arc_degrees,
         "remap_center_x": remap_center_x,
         "mask_background": mask_background,
+        "mask_background_mode": mask_background_mode,
         "background_color": clean_background_color,
         "background_tolerance": background_tolerance,
     }
