@@ -43,6 +43,7 @@ def setup_turntable_preview_scene(
     import os
     import re
     import maya.cmds as cmds
+    import maya.mel as mel
 
     def _is_number(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -164,8 +165,60 @@ def setup_turntable_preview_scene(
         return re.sub(r"[^A-Za-z0-9_\\-]", "_", label)
 
     def _refresh_file_textures():
+        def _mel_quote(value):
+            return '"' + str(value).replace("\\", "/").replace('"', '\\"') + '"'
+
+        def _reload_texture_callbacks(file_node, texture_path):
+            actions = []
+            if not texture_path:
+                return actions
+            try:
+                mel.eval("source AEfileTemplate.mel")
+            except Exception as exc:
+                actions.append({"action": "source_AEfileTemplate", "error": str(exc)})
+            try:
+                mel.eval("AEfileTextureReloadCmd " + _mel_quote(f"{file_node}.fileTextureName"))
+                actions.append({"action": "AEfileTextureReloadCmd"})
+            except Exception as exc:
+                actions.append({"action": "AEfileTextureReloadCmd", "error": str(exc)})
+                try:
+                    mel.eval("callbacks -executeCallbacks -hook textureReload " + _mel_quote(texture_path))
+                    actions.append({"action": "textureReload_callback"})
+                except Exception as callback_exc:
+                    actions.append({"action": "textureReload_callback", "error": str(callback_exc)})
+            return actions
+
+        def _placeholder_texture_path():
+            import base64
+            placeholder_path = os.path.join(cmds.internalVar(userTmpDir=True) or os.getcwd(), "maya_mcp_texture_reload_placeholder.png")
+            if not os.path.exists(placeholder_path):
+                png_bytes = base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+                )
+                with open(placeholder_path, "wb") as handle:
+                    handle.write(png_bytes)
+            return placeholder_path
+
+        placeholder_texture = _placeholder_texture_path()
+        file_nodes = cmds.ls(type="file") or []
+        scene_texture_paths = []
+        for node in file_nodes:
+            try:
+                node_path = cmds.getAttr(f"{node}.fileTextureName") or ""
+                if node_path and os.path.exists(os.path.normpath(node_path)):
+                    scene_texture_paths.append(node_path)
+            except Exception:
+                pass
+
+        def _alternate_texture_path(original_path):
+            original_norm = os.path.normcase(os.path.normpath(original_path))
+            for candidate in scene_texture_paths:
+                if os.path.normcase(os.path.normpath(candidate)) != original_norm:
+                    return candidate
+            return placeholder_texture
+
         refreshed = []
-        for file_node in cmds.ls(type="file") or []:
+        for file_node in file_nodes:
             try:
                 path = cmds.getAttr(f"{file_node}.fileTextureName") or ""
                 item = {"node": file_node, "path": path, "exists": bool(path and os.path.exists(os.path.normpath(path)))}
@@ -173,9 +226,12 @@ def setup_turntable_preview_scene(
                     cmds.setAttr(f"{file_node}.disableFileLoad", 0)
                 if path:
                     try:
-                        cmds.setAttr(f"{file_node}.fileTextureName", "", type="string")
+                        reload_path = _alternate_texture_path(path) or ""
+                        cmds.setAttr(f"{file_node}.fileTextureName", reload_path, type="string")
                         cmds.setAttr(f"{file_node}.fileTextureName", path, type="string")
                         item["path_reloaded"] = True
+                        item["reload_placeholder"] = reload_path
+                        item["reload_actions"] = _reload_texture_callbacks(file_node, path)
                     except Exception as exc:
                         item["reload_error"] = str(exc)
                 try:
@@ -449,6 +505,9 @@ def setup_turntable_preview_scene(
         ]
         cmds.xform(camera, translation=camera_position, worldSpace=True)
         _aim_camera(camera, target_position)
+        frame_refreshed_textures = []
+        if refresh_textures:
+            frame_refreshed_textures = _refresh_file_textures()
         try:
             cmds.refresh(force=True)
         except Exception:
@@ -485,6 +544,7 @@ def setup_turntable_preview_scene(
                 "angle_degrees": angle,
                 "camera_position": camera_position,
                 "playblast_path": playblast_result or frame_path,
+                "refreshed_textures": frame_refreshed_textures,
                 "foreground_metrics": foreground_metrics,
             }
         )
