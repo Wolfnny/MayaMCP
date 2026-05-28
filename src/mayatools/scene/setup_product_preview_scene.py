@@ -15,6 +15,7 @@ def setup_product_preview_scene(
     display_textures: bool = True,
     transparency_algorithm: str = "depthPeeling",
     display_curves: bool = False,
+    refresh_textures: bool = False,
     playblast_path: str = None,
     image_width: int = 1200,
     image_height: int = 1600,
@@ -25,7 +26,8 @@ def setup_product_preview_scene(
     transparent materials in a repeatable studio-like viewport. It can frame
     target objects from their bounding box, create simple three-point lighting,
     set a neutral background, configure model panels for shaded/textured display,
-    and optionally write a playblast image.
+    optionally soft-refresh file texture nodes, and optionally write a playblast
+    image.
     """
     import math
     import os
@@ -146,6 +148,32 @@ def setup_product_preview_scene(
         cmds.delete(constraint)
         cmds.delete(locator)
 
+    def _prepare_file_textures(force_refresh):
+        prepared = []
+        for file_node in cmds.ls(type="file") or []:
+            item = {"node": file_node}
+            try:
+                path = cmds.getAttr(f"{file_node}.fileTextureName") or ""
+                item["path"] = path
+                item["exists"] = bool(path and os.path.exists(os.path.normpath(path)))
+                if cmds.attributeQuery("disableFileLoad", node=file_node, exists=True):
+                    cmds.setAttr(f"{file_node}.disableFileLoad", 0)
+                if force_refresh:
+                    try:
+                        cmds.dgdirty(file_node)
+                    except Exception:
+                        pass
+                prepared.append(item)
+            except Exception as exc:
+                item["error"] = str(exc)
+                prepared.append(item)
+        if force_refresh:
+            try:
+                cmds.refresh(force=True)
+            except Exception:
+                pass
+        return prepared
+
     if not name:
         raise ValueError("name is required.")
     target_objects = _normalize_targets(target_objects)
@@ -161,6 +189,8 @@ def setup_product_preview_scene(
     rim_light_intensity = _validate_scalar(rim_light_intensity, "rim_light_intensity")
     image_width = _validate_image_size(image_width, "image_width")
     image_height = _validate_image_size(image_height, "image_height")
+    if not isinstance(refresh_textures, bool):
+        raise ValueError("refresh_textures must be a boolean.")
     transparency_algorithm = transparency_algorithm.strip()
 
     bbox = _combined_bbox(target_objects)
@@ -216,12 +246,7 @@ def setup_product_preview_scene(
     except Exception:
         pass
 
-    for file_node in cmds.ls(type="file") or []:
-        try:
-            if cmds.attributeQuery("disableFileLoad", node=file_node, exists=True):
-                cmds.setAttr(f"{file_node}.disableFileLoad", 0)
-        except Exception:
-            pass
+    refreshed_textures = _prepare_file_textures(refresh_textures)
     panels = cmds.getPanel(type="modelPanel") or []
     configured_panels = []
     for panel in panels:
@@ -287,6 +312,8 @@ def setup_product_preview_scene(
         "background_color": background_color,
         "transparency_algorithm": transparency_algorithm,
         "display_curves": bool(display_curves),
+        "refresh_textures": bool(refresh_textures),
+        "refreshed_textures": refreshed_textures if refresh_textures else [],
         "image_width": image_width,
         "image_height": image_height,
         "configured_panels": configured_panels,
