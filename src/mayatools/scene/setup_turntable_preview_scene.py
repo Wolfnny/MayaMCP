@@ -16,10 +16,14 @@ def setup_turntable_preview_scene(
     display_textures: bool = True,
     transparency_algorithm: str = "depthPeeling",
     display_curves: bool = False,
+    refresh_textures: bool = False,
     output_directory: str = None,
     image_prefix: str = None,
     contact_sheet_path: str = None,
     contact_sheet_columns: int = 0,
+    annotate_contact_sheet: bool = False,
+    analyze_foreground: bool = False,
+    foreground_tolerance: float = 0.16,
     image_width: int = 900,
     image_height: int = 1200,
 ) -> Dict[str, Any]:
@@ -30,7 +34,9 @@ def setup_turntable_preview_scene(
     angle, and can optionally combine the frames into a contact sheet. It is a
     generic visual QA utility for checking whether product, prop, packaging,
     decal, transparent-material, or relief work holds up beyond a single front
-    view.
+    view. It can soft-refresh file texture nodes before the sequence when
+    requested. Optional annotations label contact-sheet angles, and optional
+    foreground analysis reports each frame's bbox, aspect, and coverage.
     """
     import math
     import os
@@ -156,31 +162,62 @@ def setup_turntable_preview_scene(
         label = label.replace("-", "m").replace(".", "p")
         return re.sub(r"[^A-Za-z0-9_\\-]", "_", label)
 
-    def _make_contact_sheet(image_paths, destination, columns):
+    def _refresh_file_textures():
+        refreshed = []
+        for file_node in cmds.ls(type="file") or []:
+            try:
+                path = cmds.getAttr(f"{file_node}.fileTextureName") or ""
+                if cmds.attributeQuery("disableFileLoad", node=file_node, exists=True):
+                    cmds.setAttr(f"{file_node}.disableFileLoad", 0)
+                try:
+                    cmds.dgdirty(file_node)
+                except Exception:
+                    pass
+                refreshed.append({"node": file_node, "path": path, "exists": bool(path and os.path.exists(os.path.normpath(path)))})
+            except Exception as exc:
+                refreshed.append({"node": file_node, "error": str(exc)})
         try:
-            from PySide6.QtGui import QImage, QPainter, QColor
+            cmds.refresh(force=True)
+        except Exception:
+            pass
+        return refreshed
+
+    def _make_contact_sheet(frame_items, destination, columns):
+        try:
+            from PySide6.QtGui import QImage, QPainter, QColor, QFont
         except Exception:
             try:
-                from PySide2.QtGui import QImage, QPainter, QColor
+                from PySide2.QtGui import QImage, QPainter, QColor, QFont
             except Exception as exc:
                 raise RuntimeError("PySide QImage is required to write a contact sheet in Maya.") from exc
 
-        if not image_paths:
+        if not frame_items:
             return None
         columns = max(1, columns)
-        rows = int(math.ceil(len(image_paths) / float(columns)))
+        rows = int(math.ceil(len(frame_items) / float(columns)))
         sheet = QImage(image_width * columns, image_height * rows, QImage.Format_ARGB32)
         color = QColor()
         color.setRgbF(background_color[0], background_color[1], background_color[2], 1.0)
         sheet.fill(color)
         painter = QPainter(sheet)
-        for index, path in enumerate(image_paths):
+        if annotate_contact_sheet:
+            font = QFont()
+            font.setPointSize(max(8, int(min(image_width, image_height) * 0.025)))
+            font.setBold(True)
+            painter.setFont(font)
+        for index, frame_item in enumerate(frame_items):
+            path = frame_item.get("playblast_path")
             image = QImage(path)
             if image.isNull():
                 continue
             x = (index % columns) * image_width
             y = (index // columns) * image_height
             painter.drawImage(x, y, image)
+            if annotate_contact_sheet:
+                label = f"{index:02d} angle {frame_item.get('angle_degrees', 0.0):.1f} deg"
+                painter.fillRect(x, y, image_width, max(24, int(image_height * 0.05)), QColor(0, 0, 0, 150))
+                painter.setPen(QColor(255, 255, 255, 255))
+                painter.drawText(x + 8, y + max(18, int(image_height * 0.035)), label)
         painter.end()
         directory = os.path.dirname(destination)
         if directory and not os.path.exists(directory):
@@ -188,6 +225,77 @@ def setup_turntable_preview_scene(
         if not sheet.save(destination):
             raise RuntimeError(f"Unable to write contact sheet: {destination}")
         return destination
+
+    def _foreground_metrics(image_path):
+        try:
+            from PySide6.QtGui import QImage
+        except Exception:
+            try:
+                from PySide2.QtGui import QImage
+            except Exception as exc:
+                raise RuntimeError("PySide QImage is required to analyze turntable foreground frames in Maya.") from exc
+
+        image = QImage(image_path)
+        if image.isNull():
+            return {
+                "image_path": image_path,
+                "foreground_pixels": 0,
+                "foreground_coverage": 0.0,
+                "foreground_bbox_pixels": None,
+                "foreground_bbox_normalized": None,
+                "foreground_aspect": None,
+            }
+
+        width = image.width()
+        height = image.height()
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+        count = 0
+        for y in range(height):
+            for x in range(width):
+                color = image.pixelColor(x, y)
+                if color.alphaF() < 0.05:
+                    continue
+                red = color.redF()
+                green = color.greenF()
+                blue = color.blueF()
+                dr = red - background_color[0]
+                dg = green - background_color[1]
+                db = blue - background_color[2]
+                if math.sqrt(dr * dr + dg * dg + db * db) <= foreground_tolerance:
+                    continue
+                count += 1
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+
+        if count <= 0:
+            bbox = None
+            normalized = None
+            aspect = None
+        else:
+            bbox = [min_x, min_y, max_x, max_y]
+            normalized = [
+                min_x / float(max(1, width - 1)),
+                min_y / float(max(1, height - 1)),
+                max_x / float(max(1, width - 1)),
+                max_y / float(max(1, height - 1)),
+            ]
+            bbox_width = max_x - min_x + 1
+            bbox_height = max_y - min_y + 1
+            aspect = bbox_width / float(max(1, bbox_height))
+
+        return {
+            "image_path": image_path,
+            "foreground_pixels": count,
+            "foreground_coverage": count / float(max(1, width * height)),
+            "foreground_bbox_pixels": bbox,
+            "foreground_bbox_normalized": normalized,
+            "foreground_aspect": aspect,
+        }
 
     if not name:
         raise ValueError("name is required.")
@@ -213,6 +321,15 @@ def setup_turntable_preview_scene(
     image_height = _validate_image_size(image_height, "image_height")
     if not isinstance(contact_sheet_columns, int) or isinstance(contact_sheet_columns, bool) or contact_sheet_columns < 0:
         raise ValueError("contact_sheet_columns must be an integer greater than or equal to zero.")
+    if not isinstance(refresh_textures, bool):
+        raise ValueError("refresh_textures must be a boolean.")
+    if not isinstance(annotate_contact_sheet, bool):
+        raise ValueError("annotate_contact_sheet must be a boolean.")
+    if not isinstance(analyze_foreground, bool):
+        raise ValueError("analyze_foreground must be a boolean.")
+    foreground_tolerance = _validate_scalar(foreground_tolerance, "foreground_tolerance")
+    if foreground_tolerance < 0.0:
+        raise ValueError("foreground_tolerance must be greater than or equal to zero.")
     transparency_algorithm = transparency_algorithm.strip()
 
     bbox = _combined_bbox(target_objects)
@@ -266,12 +383,7 @@ def setup_turntable_preview_scene(
     except Exception:
         pass
 
-    for file_node in cmds.ls(type="file") or []:
-        try:
-            if cmds.attributeQuery("disableFileLoad", node=file_node, exists=True):
-                cmds.setAttr(f"{file_node}.disableFileLoad", 0)
-        except Exception:
-            pass
+    refreshed_textures = _refresh_file_textures() if refresh_textures else []
 
     panels = cmds.getPanel(type="modelPanel") or []
     configured_panels = []
@@ -337,12 +449,17 @@ def setup_turntable_preview_scene(
             )
             image_paths.append(playblast_result or frame_path)
 
+        foreground_metrics = None
+        if analyze_foreground and (playblast_result or frame_path):
+            foreground_metrics = _foreground_metrics(playblast_result or frame_path)
+
         frame_results.append(
             {
                 "index": index,
                 "angle_degrees": angle,
                 "camera_position": camera_position,
                 "playblast_path": playblast_result or frame_path,
+                "foreground_metrics": foreground_metrics,
             }
         )
 
@@ -350,7 +467,7 @@ def setup_turntable_preview_scene(
     if contact_sheet_path:
         normalized_contact_sheet_path = os.path.normpath(contact_sheet_path)
         columns = contact_sheet_columns if contact_sheet_columns > 0 else int(math.ceil(math.sqrt(len(image_paths))))
-        written_contact_sheet = _make_contact_sheet(image_paths, normalized_contact_sheet_path, columns)
+        written_contact_sheet = _make_contact_sheet(frame_results, normalized_contact_sheet_path, columns)
 
     return {
         "success": True,
@@ -366,6 +483,11 @@ def setup_turntable_preview_scene(
         "background_color": background_color,
         "transparency_algorithm": transparency_algorithm,
         "display_curves": bool(display_curves),
+        "refresh_textures": bool(refresh_textures),
+        "refreshed_textures": refreshed_textures,
+        "annotate_contact_sheet": bool(annotate_contact_sheet),
+        "analyze_foreground": bool(analyze_foreground),
+        "foreground_tolerance": foreground_tolerance,
         "image_width": image_width,
         "image_height": image_height,
         "configured_panels": configured_panels,

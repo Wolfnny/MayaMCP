@@ -24,6 +24,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | scene_save | Save the current scene. If the filename is not specified, it will save it as its current name. |
 | select_object | Select an object in the scene. |
 | setup_product_preview_scene | Set up a generic product-preview camera, lights, viewport settings, and optional playblast image; omitted targets auto-frame visible scene geometry. |
+| setup_turntable_preview_scene | Render generic multi-angle product preview frames and a contact sheet, with optional soft texture refresh, angle annotations, and foreground bbox/aspect/coverage diagnostics. |
 | create_reference_image_plane | Create a textured world-space reference image plane with optional alpha fitted to target objects for silhouette, proportion, or layout comparison. |
 | compare_image_silhouettes | Compare two image silhouettes with optional foreground auto-cropping, normalized overlay, IoU, centroid, aspect, row-width, vertical-band metrics, and optional profile-correction output. |
 | compare_image_appearance | Compare cropped and aligned reference/candidate image appearance with masked RGB/luminance error metrics, optional foreground auto-cropping, band/grid summaries, and a heatmap diagnostic. |
@@ -40,6 +41,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | refresh_file_textures | Refresh Maya file texture nodes, re-enable file loading, touch texture paths, and reset textured viewport display. |
 | extract_image_region_texture | Crop explicitly or by foreground auto-bbox, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, silhouettes, or trim. |
 | extract_image_matte_texture | Extract cropped textures with alpha mattes derived from color, hue, foreground, or alpha image regions. |
+| compose_image_layers | Compose multiple cropped/scaled/positioned image layers onto a single RGBA texture atlas or wrap texture. |
 | adjust_image_colors | Write an adjusted texture copy with channel gain/bias, brightness, contrast, saturation, value, gamma, optional alpha, and alpha/foreground/luminance/HSV masks. |
 | extract_image_detail_mask | Extract dark, bright, absolute-contrast, or edge detail masks from reference images for texture cleanup or geometry relief. |
 | extract_image_contours | Extract traced and filtered image-mask contours and optionally create planar or cylindrical Maya curves. |
