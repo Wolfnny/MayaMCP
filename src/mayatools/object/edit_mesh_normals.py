@@ -9,6 +9,9 @@ def edit_mesh_normals(
     components: Union[str, List[str]] = None,
     normal: List[float] = None,
     angle: float = 30.0,
+    min_angle: float = None,
+    max_angle: float = None,
+    include_boundary_edges: bool = False,
     distance: float = 0.0,
     normalize_vector: bool = True,
     construction_history: bool = False,
@@ -29,6 +32,10 @@ def edit_mesh_normals(
     - lock_normals: freeze selected vertex normals
     - unlock_normals: unfreeze selected vertex normals
     - average_normals: average selected vertex normals within distance
+    - query_edge_angles: report dihedral angles for selected or all mesh edges
+    - select_edges_by_angle: select edges whose adjacent face angle matches
+    - harden_edges_by_angle: harden matching edges
+    - soften_edges_by_angle: soften matching edges
 
     This provides Maya-style normal control for localized shading and highlight
     cleanup without relying on object-wide smoothing shortcuts.
@@ -141,6 +148,18 @@ def edit_mesh_normals(
                 ids.append(int(match.group(1)))
         return sorted(set(ids))
 
+    def _all_edge_components():
+        return [f"{prefix_name}.e[{edge_id}]" for edge_id in range(int(mesh_fn.numEdges))]
+
+    def _edge_scope_components():
+        resolved = _resolve_components("edge", allow_object=True)
+        if resolved == [object_name]:
+            return _all_edge_components()
+        edge_targets = _to_edges(resolved)
+        if not edge_targets:
+            raise ValueError(f"{operation} requires edge components or object scope.")
+        return edge_targets
+
     def _to_vertices(items):
         converted = cmds.polyListComponentConversion(items, toVertex=True) or []
         return cmds.ls(converted, flatten=True) or []
@@ -159,6 +178,61 @@ def edit_mesh_normals(
             if index + 2 < len(values):
                 triplets.append([float(values[index]), float(values[index + 1]), float(values[index + 2])])
         return triplets
+
+    def _edge_angle_records(edge_items):
+        edge_ids = _component_ids(edge_items, "e")
+        records = []
+        for edge_id in edge_ids:
+            component = f"{prefix_name}.e[{edge_id}]"
+            edge_it = om.MItMeshEdge(_dag_path)
+            edge_it.setIndex(edge_id)
+            connected_faces = [int(face_id) for face_id in edge_it.getConnectedFaces()]
+            angle_value = None
+            if len(connected_faces) == 2:
+                normal_a = mesh_fn.getPolygonNormal(connected_faces[0], om.MSpace.kWorld)
+                normal_b = mesh_fn.getPolygonNormal(connected_faces[1], om.MSpace.kWorld)
+                vector_a = om.MVector(normal_a.x, normal_a.y, normal_a.z)
+                vector_b = om.MVector(normal_b.x, normal_b.y, normal_b.z)
+                if vector_a.length() > 1.0e-12 and vector_b.length() > 1.0e-12:
+                    vector_a.normalize()
+                    vector_b.normalize()
+                    dot = max(-1.0, min(1.0, vector_a * vector_b))
+                    angle_value = float(math.degrees(math.acos(dot)))
+            records.append(
+                {
+                    "component": component,
+                    "index": edge_id,
+                    "connected_faces": connected_faces,
+                    "boundary": len(connected_faces) < 2,
+                    "nonmanifold": len(connected_faces) > 2,
+                    "angle": angle_value,
+                }
+            )
+        return records
+
+    def _angle_bounds():
+        lower = _validate_scalar(min_angle, "min_angle") if min_angle is not None else _validate_scalar(angle, "angle")
+        upper = _validate_scalar(max_angle, "max_angle") if max_angle is not None else 180.0
+        if lower < 0.0 or lower > 180.0 or upper < 0.0 or upper > 180.0:
+            raise ValueError("angle, min_angle, and max_angle must be between 0 and 180.")
+        if lower > upper:
+            lower, upper = upper, lower
+        return lower, upper
+
+    def _matching_edge_records(edge_items):
+        lower, upper = _angle_bounds()
+        records = []
+        skipped = []
+        for record in _edge_angle_records(edge_items):
+            if record["angle"] is None:
+                if include_boundary_edges and record["boundary"]:
+                    records.append(record)
+                else:
+                    skipped.append(record)
+                continue
+            if lower <= record["angle"] <= upper:
+                records.append(record)
+        return records, skipped, lower, upper
 
     def _query_components(items):
         faces = _to_faces(items)
@@ -203,6 +277,11 @@ def edit_mesh_normals(
             "faces": int(cmds.polyEvaluate(object_name, face=True)),
         }
 
+    def _dag_path_for_shape(shape):
+        selection = om.MSelectionList()
+        selection.add(shape)
+        return selection.getDagPath(0)
+
     if not object_name:
         raise ValueError("object_name is required.")
     operation = operation.lower().strip()
@@ -218,6 +297,10 @@ def edit_mesh_normals(
         "lock_normals",
         "unlock_normals",
         "average_normals",
+        "query_edge_angles",
+        "select_edges_by_angle",
+        "harden_edges_by_angle",
+        "soften_edges_by_angle",
     }
     if operation not in allowed:
         raise ValueError(f"operation must be one of: {', '.join(sorted(allowed))}.")
@@ -225,6 +308,7 @@ def edit_mesh_normals(
     shape_name = _mesh_shape(object_name)
     prefix_name = _prefix(shape_name)
     mesh_fn = _mesh_fn(shape_name)
+    _dag_path = _dag_path_for_shape(shape_name)
     before_counts = _counts()
 
     if operation == "query":
@@ -236,6 +320,58 @@ def edit_mesh_normals(
             "components_preview": resolved[:max_preview],
             "counts": before_counts,
             "query": _query_components(resolved),
+        }
+
+    if operation == "query_edge_angles":
+        edge_targets = _edge_scope_components()
+        records = _edge_angle_records(edge_targets)
+        return {
+            "success": True,
+            "object_name": object_name,
+            "operation": operation,
+            "component_count": len(edge_targets),
+            "components_preview": edge_targets[:max_preview],
+            "counts": before_counts,
+            "records": records[:max_preview],
+            "truncated": len(records) > max_preview,
+            "boundary_count": sum(1 for record in records if record["boundary"]),
+            "nonmanifold_count": sum(1 for record in records if record["nonmanifold"]),
+        }
+
+    if operation in {"select_edges_by_angle", "harden_edges_by_angle", "soften_edges_by_angle"}:
+        edge_targets = _edge_scope_components()
+        records, skipped, lower_angle, upper_angle = _matching_edge_records(edge_targets)
+        matching_edges = [record["component"] for record in records]
+        if operation == "select_edges_by_angle":
+            if matching_edges:
+                cmds.select(matching_edges, replace=True)
+            else:
+                cmds.select(clear=True)
+            node = None
+            applied_angle = None
+        else:
+            applied_angle = 0.0 if operation == "harden_edges_by_angle" else 180.0
+            node = cmds.polySoftEdge(matching_edges, angle=applied_angle, constructionHistory=construction_history) if matching_edges else None
+            if matching_edges:
+                cmds.select(matching_edges, replace=True)
+            else:
+                cmds.select(clear=True)
+        return {
+            "success": True,
+            "object_name": object_name,
+            "operation": operation,
+            "angle_range": [lower_angle, upper_angle],
+            "include_boundary_edges": bool(include_boundary_edges),
+            "input_edge_count": len(edge_targets),
+            "matching_edge_count": len(matching_edges),
+            "matching_edges_preview": matching_edges[:max_preview],
+            "matching_records": records[:max_preview],
+            "skipped_unmeasured_count": len(skipped),
+            "skipped_unmeasured_preview": skipped[:max_preview],
+            "node": node,
+            "applied_soft_edge_angle": applied_angle,
+            "counts_before": before_counts,
+            "counts_after": _counts(),
         }
 
     if operation in {"soften_edges", "harden_edges", "set_edge_softness"}:
