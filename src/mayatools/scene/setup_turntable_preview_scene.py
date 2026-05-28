@@ -37,6 +37,7 @@ def setup_turntable_preview_scene(
     view. It can soft-refresh file texture nodes before the sequence when
     requested. Optional annotations label contact-sheet angles, and optional
     foreground analysis reports each frame's bbox, aspect, and coverage.
+    Texture refresh also resets the viewport cache when available.
     """
     import math
     import os
@@ -181,6 +182,19 @@ def setup_turntable_preview_scene(
         except Exception:
             pass
         return refreshed
+
+    def _reset_viewport_cache():
+        try:
+            panels = cmds.ogs(reset=True) or []
+            if isinstance(panels, str):
+                panels = [panels]
+            try:
+                cmds.refresh(force=True)
+            except Exception:
+                pass
+            return {"panels": panels}
+        except Exception as exc:
+            return {"error": str(exc), "panels": []}
 
     def _make_contact_sheet(frame_items, destination, columns):
         try:
@@ -412,6 +426,8 @@ def setup_turntable_preview_scene(
         except Exception:
             continue
 
+    viewport_cache_reset = _reset_viewport_cache() if refresh_textures else {"panels": []}
+
     frame_results = []
     image_paths = []
     for index, angle in enumerate(angles_degrees):
@@ -485,6 +501,7 @@ def setup_turntable_preview_scene(
         "display_curves": bool(display_curves),
         "refresh_textures": bool(refresh_textures),
         "refreshed_textures": refreshed_textures,
+        "viewport_cache_reset": viewport_cache_reset,
         "annotate_contact_sheet": bool(annotate_contact_sheet),
         "analyze_foreground": bool(analyze_foreground),
         "foreground_tolerance": foreground_tolerance,

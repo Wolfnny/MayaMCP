@@ -26,8 +26,8 @@ def setup_product_preview_scene(
     transparent materials in a repeatable studio-like viewport. It can frame
     target objects from their bounding box, create simple three-point lighting,
     set a neutral background, configure model panels for shaded/textured display,
-    optionally soft-refresh file texture nodes, and optionally write a playblast
-    image.
+    optionally soft-refresh file texture nodes and reset the viewport cache,
+    and optionally write a playblast image.
     """
     import math
     import os
@@ -174,6 +174,19 @@ def setup_product_preview_scene(
                 pass
         return prepared
 
+    def _reset_viewport_cache():
+        try:
+            panels = cmds.ogs(reset=True) or []
+            if isinstance(panels, str):
+                panels = [panels]
+            try:
+                cmds.refresh(force=True)
+            except Exception:
+                pass
+            return {"panels": panels}
+        except Exception as exc:
+            return {"error": str(exc), "panels": []}
+
     if not name:
         raise ValueError("name is required.")
     target_objects = _normalize_targets(target_objects)
@@ -274,6 +287,8 @@ def setup_product_preview_scene(
         except Exception:
             continue
 
+    viewport_cache_reset = _reset_viewport_cache() if refresh_textures else {"panels": []}
+
     try:
         cmds.refresh(force=True)
     except Exception:
@@ -314,6 +329,7 @@ def setup_product_preview_scene(
         "display_curves": bool(display_curves),
         "refresh_textures": bool(refresh_textures),
         "refreshed_textures": refreshed_textures if refresh_textures else [],
+        "viewport_cache_reset": viewport_cache_reset,
         "image_width": image_width,
         "image_height": image_height,
         "configured_panels": configured_panels,
