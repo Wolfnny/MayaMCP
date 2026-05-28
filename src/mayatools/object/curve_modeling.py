@@ -142,7 +142,6 @@ def curve_modeling(
             axis=axis_vector,
             degree=3,
             sections=sections,
-            sweepType=1,  # 0=linear, 1=circular, 2=square
             useTolerance=True,
             startSweep=0,
             endSweep=angle

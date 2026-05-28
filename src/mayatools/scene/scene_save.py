@@ -15,9 +15,9 @@ def scene_save(filename:str=None) -> Dict[str, Any]:
     file_type = None
     _, ext = os.path.splitext(filename)
     if ext == ".mb":
-        file_type = "mayabinary"
+        file_type = "mayaBinary"
     elif ext == ".ma":
-        file_type = "mayaascii"
+        file_type = "mayaAscii"
     elif not ext:
         # no extension
         file_type = cmds.file(query=True, type=True)
@@ -26,7 +26,7 @@ def scene_save(filename:str=None) -> Dict[str, Any]:
                 file_type = file_type[0]
             else:
                 raise RuntimeError("Unable to determine the file type of the current scene")
-        ext = ".mb" if file_type == "mayabinary" else ".ma"
+        ext = ".mb" if file_type == "mayaBinary" else ".ma"
         filename += ext
     else:
         # trying to save a format that should be export

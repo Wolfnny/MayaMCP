@@ -58,6 +58,15 @@ def create_advanced_model(
     mat_name = f"{name}_material"
     material = cmds.shadingNode('lambert', asShader=True, name=mat_name)
     cmds.setAttr(f"{mat_name}.color", color[0], color[1], color[2], type='double3')
+
+    def _assign_material(objects, shader):
+        if isinstance(objects, str):
+            objects = [objects]
+        sg = f"{shader}SG"
+        if not cmds.objExists(sg):
+            sg = cmds.sets(empty=True, renderable=True, noSurfaceShader=True, name=sg)
+            cmds.connectAttr(f"{shader}.outColor", f"{sg}.surfaceShader", force=True)
+        cmds.sets(objects, edit=True, forceElement=sg)
     
     # Function to apply transformations to the entire model at the end
     def finalize_model():
@@ -190,8 +199,7 @@ def create_advanced_model(
         cmds.parent(headlight_r, model_group)
         
         # Apply materials
-        for comp in components:
-            cmds.sets(comp, forceElement=cmds.sets(name=f"{mat_name}SG", renderable=True, noSurfaceShader=True))
+        _assign_material(components, material)
         
     elif model_type.lower() == "tree":
         # Get tree-specific parameters with defaults
@@ -210,7 +218,7 @@ def create_advanced_model(
         # Create trunk material
         trunk_mat = cmds.shadingNode('lambert', asShader=True, name=f"{name}_trunk_material")
         cmds.setAttr(f"{trunk_mat}.color", 0.3, 0.2, 0.1, type='double3')
-        cmds.sets(trunk, forceElement=cmds.sets(name=f"{trunk_mat}SG", renderable=True, noSurfaceShader=True))
+        _assign_material(trunk, trunk_mat)
         
         # Create foliage based on tree type
         if tree_type.lower() in ('oak', 'maple', 'deciduous'):
@@ -290,7 +298,7 @@ def create_advanced_model(
         # Apply leaf material to all foliage components except trunk
         foliage_components = [c for c in components if 'trunk' not in c]
         if foliage_components:
-            cmds.sets(foliage_components, forceElement=cmds.sets(name=f"{leaf_mat}SG", renderable=True, noSurfaceShader=True))
+            _assign_material(foliage_components, leaf_mat)
         
     elif model_type.lower() == "building":
         # Get building parameters with defaults
@@ -366,7 +374,7 @@ def create_advanced_model(
         # Apply materials
         building_mat = cmds.shadingNode('lambert', asShader=True, name=f"{name}_building_material")
         cmds.setAttr(f"{building_mat}.color", color[0], color[1], color[2], type='double3')
-        cmds.sets([building, roof], forceElement=cmds.sets(name=f"{building_mat}SG", renderable=True, noSurfaceShader=True))
+        _assign_material([building, roof], building_mat)
         
         # Window material
         window_mat = cmds.shadingNode('lambert', asShader=True, name=f"{name}_window_material")
@@ -374,12 +382,12 @@ def create_advanced_model(
         # Get all window objects
         window_objects = [c for c in components if 'window' in c]
         if window_objects:
-            cmds.sets(window_objects, forceElement=cmds.sets(name=f"{window_mat}SG", renderable=True, noSurfaceShader=True))
+            _assign_material(window_objects, window_mat)
         
         # Door material
         door_mat = cmds.shadingNode('lambert', asShader=True, name=f"{name}_door_material")
         cmds.setAttr(f"{door_mat}.color", 0.4, 0.2, 0.1, type='double3')
-        cmds.sets(door, forceElement=cmds.sets(name=f"{door_mat}SG", renderable=True, noSurfaceShader=True))
+        _assign_material(door, door_mat)
     
     elif model_type.lower() == "cup":
         # Get cup parameters
@@ -416,10 +424,10 @@ def create_advanced_model(
             cmds.parent(handle, model_group)
             
             # Create a unified material
-            cmds.sets([cup_final, handle], forceElement=cmds.sets(name=f"{mat_name}SG", renderable=True, noSurfaceShader=True))
+            _assign_material([cup_final, handle], material)
         else:
             # Apply material just to the cup
-            cmds.sets(cup_final, forceElement=cmds.sets(name=f"{mat_name}SG", renderable=True, noSurfaceShader=True))
+            _assign_material(cup_final, material)
     
     elif model_type.lower() == "chair":
         # Get chair parameters
@@ -455,7 +463,7 @@ def create_advanced_model(
             cmds.parent(leg, model_group)
         
         # Apply materials
-        cmds.sets(components, forceElement=cmds.sets(name=f"{mat_name}SG", renderable=True, noSurfaceShader=True))
+        _assign_material(components, material)
         
     else:
         raise ValueError(f"Error: unknown model type {model_type}, use one of these types: car, tree, building, cup, chair")
