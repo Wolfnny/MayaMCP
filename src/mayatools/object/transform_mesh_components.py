@@ -17,6 +17,10 @@ def transform_mesh_components(
     end_value: float = None,
     pivot: List[float] = None,
     pivot_mode: str = "selection_center",
+    plane_point: List[float] = None,
+    plane_normal: List[float] = None,
+    center: List[float] = None,
+    radius_mode: str = "explicit",
     space: str = "world",
     use_selection: bool = True,
     max_preview: int = 20,
@@ -29,6 +33,9 @@ def transform_mesh_components(
     - rotate: rotate resolved vertices around a pivot using XYZ degrees
     - align_axis: set all resolved vertices to one coordinate on x, y, or z
     - distribute_axis: evenly distribute resolved vertices along x, y, or z
+    - align_plane: project resolved vertices onto an arbitrary plane
+    - align_radial: set resolved vertices to a shared cylinder radius around
+      x, y, or z while preserving height and angle
 
     Components can be explicit, built from component_type plus indices, or read
     from the current selection. Edges and faces are converted to their unique
@@ -144,6 +151,13 @@ def transform_mesh_components(
     def _point_to_list(point):
         return [float(point.x), float(point.y), float(point.z)]
 
+    def _normalize(values, arg_name):
+        vector = _validate_vector(values, 3, arg_name)
+        length = math.sqrt(sum(item * item for item in vector))
+        if length <= 1e-12:
+            raise ValueError(f"{arg_name} must not be a zero vector.")
+        return [item / length for item in vector]
+
     def _point_preview(vertex_ids, current_points):
         return [
             {"index": vertex_id, "position": _point_to_list(current_points[vertex_id])}
@@ -211,6 +225,42 @@ def transform_mesh_components(
             return object_center[axis_idx]
         raise ValueError("value_mode must be explicit, selection_min, selection_max, selection_center, object_min, object_max, or object_center.")
 
+    def _center_point(current_points):
+        if center is not None:
+            return _validate_vector(center, 3, "center")
+        return _pivot(current_points)
+
+    def _target_radius(vertex_ids_to_check, current_points, center_value, axis_idx):
+        mode = radius_mode.lower().strip()
+        radial_axes = [index for index in range(3) if index != axis_idx]
+        radii = []
+        for vertex_id in vertex_ids_to_check:
+            point = current_points[vertex_id]
+            values = [point.x, point.y, point.z]
+            delta_a = values[radial_axes[0]] - center_value[radial_axes[0]]
+            delta_b = values[radial_axes[1]] - center_value[radial_axes[1]]
+            radii.append(math.sqrt(delta_a * delta_a + delta_b * delta_b))
+        if mode == "explicit":
+            radius = _validate_scalar(value, "value")
+        elif mode == "selection_min":
+            radius = min(radii)
+        elif mode == "selection_max":
+            radius = max(radii)
+        elif mode in {"selection_mean", "selection_center"}:
+            radius = sum(radii) / float(len(radii))
+        elif mode == "selection_median":
+            ordered = sorted(radii)
+            mid = len(ordered) // 2
+            if len(ordered) % 2:
+                radius = ordered[mid]
+            else:
+                radius = (ordered[mid - 1] + ordered[mid]) * 0.5
+        else:
+            raise ValueError("radius_mode must be explicit, selection_min, selection_max, selection_mean, selection_center, or selection_median.")
+        if radius < 0.0:
+            raise ValueError("target radius must be greater than or equal to zero.")
+        return radius
+
     def _rotate_point(point, pivot_value, rotation_value):
         rx, ry, rz = [math.radians(item) for item in rotation_value]
         x = point.x - pivot_value[0]
@@ -231,8 +281,8 @@ def transform_mesh_components(
     if not object_name:
         raise ValueError("object_name is required.")
     operation = operation.lower().strip()
-    if operation not in {"translate", "scale", "rotate", "align_axis", "distribute_axis"}:
-        raise ValueError("operation must be translate, scale, rotate, align_axis, or distribute_axis.")
+    if operation not in {"translate", "scale", "rotate", "align_axis", "distribute_axis", "align_plane", "align_radial"}:
+        raise ValueError("operation must be translate, scale, rotate, align_axis, distribute_axis, align_plane, or align_radial.")
     component_type = component_type.lower().strip()
     if component_type not in {"vertex", "edge", "face", "uv", "vertex_face"}:
         raise ValueError("component_type must be vertex, edge, face, uv, or vertex_face.")
@@ -323,6 +373,51 @@ def transform_mesh_components(
         applied["axis"] = axis.lower().strip()
         applied["start_value"] = start
         applied["end_value"] = end
+
+    elif operation == "align_plane":
+        normal = _normalize(plane_normal, "plane_normal")
+        point_on_plane = _validate_vector(plane_point, 3, "plane_point") if plane_point is not None else _pivot(points)
+        for vertex_id in vertex_ids:
+            point = points[vertex_id]
+            vector_to_point = [
+                point.x - point_on_plane[0],
+                point.y - point_on_plane[1],
+                point.z - point_on_plane[2],
+            ]
+            distance_to_plane = sum(vector_to_point[index] * normal[index] for index in range(3))
+            points[vertex_id] = om.MPoint(
+                point.x - normal[0] * distance_to_plane,
+                point.y - normal[1] * distance_to_plane,
+                point.z - normal[2] * distance_to_plane,
+            )
+        applied["plane_point"] = point_on_plane
+        applied["plane_normal"] = normal
+
+    elif operation == "align_radial":
+        axis_idx = _axis_index(axis)
+        center_value = _center_point(points)
+        target_radius = _target_radius(vertex_ids, points, center_value, axis_idx)
+        radial_axes = [index for index in range(3) if index != axis_idx]
+        fallback_axis = radial_axes[0]
+        for vertex_id in vertex_ids:
+            point = points[vertex_id]
+            values = [point.x, point.y, point.z]
+            delta_a = values[radial_axes[0]] - center_value[radial_axes[0]]
+            delta_b = values[radial_axes[1]] - center_value[radial_axes[1]]
+            current_radius = math.sqrt(delta_a * delta_a + delta_b * delta_b)
+            if current_radius <= 1e-12:
+                values[radial_axes[0]] = center_value[radial_axes[0]]
+                values[radial_axes[1]] = center_value[radial_axes[1]]
+                values[fallback_axis] = center_value[fallback_axis] + target_radius
+            else:
+                scale_factor = target_radius / current_radius
+                values[radial_axes[0]] = center_value[radial_axes[0]] + delta_a * scale_factor
+                values[radial_axes[1]] = center_value[radial_axes[1]] + delta_b * scale_factor
+            points[vertex_id] = om.MPoint(values[0], values[1], values[2])
+        applied["axis"] = axis.lower().strip()
+        applied["center"] = center_value
+        applied["radius"] = target_radius
+        applied["radius_mode"] = radius_mode.lower().strip()
 
     mesh_fn.setPoints(points, om_space)
     try:
