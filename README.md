@@ -38,6 +38,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | create_material | Create and assign materials with various types (lambert, phong, wood, marble, chrome, glass, etc.) |
 | create_pbr_material | Create generic physically-oriented materials with glass, liquid, metal, plastic, rubber, and ceramic presets. |
 | create_textured_material | Create an image-textured material, connect file and place2dTexture nodes, and optionally assign it to UV-mapped objects. |
+| get_material_assignments | Report shading-group and surface-material assignments for scene geometry, optionally including per-component set members. |
 | refresh_file_textures | Refresh Maya file texture nodes, re-enable file loading, touch texture paths, and reset textured viewport display. |
 | extract_image_region_texture | Crop explicitly or by foreground auto-bbox, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, silhouettes, or trim. |
 | extract_image_matte_texture | Extract cropped textures with alpha mattes derived from color, hue, foreground, or alpha image regions. |
