@@ -11,6 +11,7 @@ def create_curved_text(
     angle_start: float = -45.0,
     angle_end: float = 45.0,
     text_height: float = 0.35,
+    text_rotation_degrees: float = 0.0,
     surface_offset: float = 0.02,
     font: str = "Arial",
     fit_to_arc: bool = True,
@@ -25,7 +26,8 @@ def create_curved_text(
     """Create text curves or tube geometry conformed to a cylindrical surface.
 
     The text is generated as Maya text curves, mapped around a cylindrical
-    surface, and optionally converted into raised/engraved tube geometry or
+    surface, optionally rotated in the flat tangent/axis plane before wrapping,
+    and optionally converted into raised/engraved tube geometry or
     filled polygon text patches. This is useful for generic curved labels,
     embossing guides, raised outlines, filled text, and engraved text on
     bottles, cups, cans, handles, or other cylindrical forms.
@@ -57,6 +59,7 @@ def create_curved_text(
     angle_start = _validate_scalar(angle_start, "angle_start")
     angle_end = _validate_scalar(angle_end, "angle_end")
     text_height = _validate_scalar(text_height, "text_height")
+    text_rotation_degrees = _validate_scalar(text_rotation_degrees, "text_rotation_degrees")
     surface_offset = _validate_scalar(surface_offset, "surface_offset")
     bevel_radius = _validate_scalar(bevel_radius, "bevel_radius")
     if radius <= 0:
@@ -97,24 +100,43 @@ def create_curved_text(
         curve_group = cmds.rename(curve_group, f"{name}_curves")
 
     bbox = cmds.exactWorldBoundingBox(curve_group)
-    width = max(1e-6, bbox[3] - bbox[0])
-    height = max(1e-6, bbox[4] - bbox[1])
     text_center_x = (bbox[0] + bbox[3]) * 0.5
     text_center_y = (bbox[1] + bbox[4]) * 0.5
     angle_span = math.radians(angle_end - angle_start)
     arc_width = radius * angle_span
+    rotation = math.radians(text_rotation_degrees)
+    cos_rotation = math.cos(rotation)
+    sin_rotation = math.sin(rotation)
+
+    rotated_corners = []
+    for corner_x, corner_y in [
+        (bbox[0], bbox[1]),
+        (bbox[0], bbox[4]),
+        (bbox[3], bbox[1]),
+        (bbox[3], bbox[4]),
+    ]:
+        raw_x = corner_x - text_center_x
+        raw_y = corner_y - text_center_y
+        rotated_corners.append((
+            raw_x * cos_rotation - raw_y * sin_rotation,
+            raw_x * sin_rotation + raw_y * cos_rotation,
+        ))
+    rotated_width = max(1e-6, max(point[0] for point in rotated_corners) - min(point[0] for point in rotated_corners))
+    rotated_height = max(1e-6, max(point[1] for point in rotated_corners) - min(point[1] for point in rotated_corners))
     if fit_to_arc:
-        scale = min(arc_width / width, text_height / height)
+        scale = min(arc_width / rotated_width, text_height / rotated_height)
     else:
-        scale = text_height / height
+        scale = text_height / rotated_height
 
     theta_start = math.radians(angle_start)
     theta_end = math.radians(angle_end)
     mapped_radius = radius + surface_offset
 
     def _map_flat_position(flat_x, flat_y):
-        local_x = (flat_x - text_center_x) * scale
-        local_y = (flat_y - text_center_y) * scale
+        raw_x = flat_x - text_center_x
+        raw_y = flat_y - text_center_y
+        local_x = (raw_x * cos_rotation - raw_y * sin_rotation) * scale
+        local_y = (raw_x * sin_rotation + raw_y * cos_rotation) * scale
         u = (local_x / arc_width) + 0.5
         theta = theta_start + (theta_end - theta_start) * u
         position = [center[0], center[1], center[2]]
@@ -223,6 +245,7 @@ def create_curved_text(
         "angle_start": angle_start,
         "angle_end": angle_end,
         "text_height": text_height,
+        "text_rotation_degrees": text_rotation_degrees,
         "font": font,
         "material": material,
         "shading_group": shading_group,
