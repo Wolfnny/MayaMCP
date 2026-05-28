@@ -34,38 +34,35 @@ def refresh_file_textures(
                 raise ValueError(f"Node is not a Maya file texture node: {node}")
         return nodes
 
+    def _normalize_maya_path(path):
+        return os.path.normpath(path).replace("\\", "/")
+
     nodes = _normalize_nodes(file_nodes)
     refreshed = []
     missing = []
     errors = []
+    viewport_reset = {"panels": []}
 
-    def _mel_quote(value):
-        return '"' + str(value).replace("\\", "/").replace('"', '\\"') + '"'
-
-    def _reload_texture_callbacks(node, texture_path):
+    def _reload_viewport_textures():
         actions = []
-        if not texture_path:
-            return actions
         try:
-            mel.eval("source AEfileTemplate.mel")
+            mel.eval("ogs -reloadTextures;")
+            actions.append({"action": "ogs_reloadTextures"})
         except Exception as exc:
-            actions.append({"action": "source_AEfileTemplate", "error": str(exc)})
-        try:
-            mel.eval("AEfileTextureReloadCmd " + _mel_quote(f"{node}.fileTextureName"))
-            actions.append({"action": "AEfileTextureReloadCmd"})
-        except Exception as exc:
-            actions.append({"action": "AEfileTextureReloadCmd", "error": str(exc)})
-            try:
-                mel.eval("callbacks -executeCallbacks -hook textureReload " + _mel_quote(texture_path))
-                actions.append({"action": "textureReload_callback"})
-            except Exception as callback_exc:
-                actions.append({"action": "textureReload_callback", "error": str(callback_exc)})
+            actions.append({"action": "ogs_reloadTextures", "error": str(exc)})
         return actions
+
+    if reset_viewport:
+        try:
+            mel.eval("ogs -reset;")
+            viewport_reset["actions"] = [{"action": "ogs_reset"}]
+        except Exception as exc:
+            viewport_reset["error"] = str(exc)
 
     for node in nodes:
         try:
             path = cmds.getAttr(f"{node}.fileTextureName") or ""
-            clean_path = os.path.normpath(path) if path and normalize_paths else path
+            clean_path = _normalize_maya_path(path) if path and normalize_paths else path
             exists = bool(clean_path and os.path.exists(clean_path))
             if validate_paths and not exists:
                 missing.append({"node": node, "path": clean_path})
@@ -78,7 +75,7 @@ def refresh_file_textures(
                     cmds.setAttr(f"{node}.fileTextureName", clean_path, type="string")
                 if force_reload:
                     cmds.setAttr(f"{node}.fileTextureName", clean_path, type="string")
-                    reload_actions = _reload_texture_callbacks(node, clean_path)
+                    reload_actions = [{"action": "fileTextureName_touch"}]
                 else:
                     reload_actions = []
             else:
@@ -98,16 +95,11 @@ def refresh_file_textures(
         except Exception as exc:
             errors.append({"node": node, "message": str(exc)})
 
+    viewport_reload_actions = _reload_viewport_textures() if force_reload or reset_viewport else []
+    for item in refreshed:
+        item["viewport_reload_actions"] = viewport_reload_actions
+
     if reset_viewport:
-        try:
-            cmds.ogs(reset=True)
-        except Exception:
-            pass
-        try:
-            for panel in cmds.getPanel(type="modelPanel") or []:
-                cmds.modelEditor(panel, edit=True, displayTextures=True, useDefaultMaterial=False)
-        except Exception:
-            pass
         try:
             cmds.refresh(force=True)
         except Exception:
@@ -123,4 +115,6 @@ def refresh_file_textures(
         "normalize_paths": bool(normalize_paths),
         "force_reload": bool(force_reload),
         "reset_viewport": bool(reset_viewport),
+        "viewport_reset": viewport_reset,
+        "viewport_reload_actions": viewport_reload_actions,
     }

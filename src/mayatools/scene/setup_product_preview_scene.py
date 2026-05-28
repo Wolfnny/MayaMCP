@@ -150,58 +150,16 @@ def setup_product_preview_scene(
         cmds.delete(locator)
 
     def _prepare_file_textures(force_refresh):
-        def _mel_quote(value):
-            return '"' + str(value).replace("\\", "/").replace('"', '\\"') + '"'
-
-        def _reload_texture_callbacks(file_node, texture_path):
+        def _reload_viewport_textures():
             actions = []
-            if not texture_path:
-                return actions
             try:
-                mel.eval("source AEfileTemplate.mel")
+                mel.eval("ogs -reloadTextures;")
+                actions.append({"action": "ogs_reloadTextures"})
             except Exception as exc:
-                actions.append({"action": "source_AEfileTemplate", "error": str(exc)})
-            try:
-                mel.eval("AEfileTextureReloadCmd " + _mel_quote(f"{file_node}.fileTextureName"))
-                actions.append({"action": "AEfileTextureReloadCmd"})
-            except Exception as exc:
-                actions.append({"action": "AEfileTextureReloadCmd", "error": str(exc)})
-                try:
-                    mel.eval("callbacks -executeCallbacks -hook textureReload " + _mel_quote(texture_path))
-                    actions.append({"action": "textureReload_callback"})
-                except Exception as callback_exc:
-                    actions.append({"action": "textureReload_callback", "error": str(callback_exc)})
+                actions.append({"action": "ogs_reloadTextures", "error": str(exc)})
             return actions
 
-        def _placeholder_texture_path():
-            import base64
-            placeholder_path = os.path.join(cmds.internalVar(userTmpDir=True) or os.getcwd(), "maya_mcp_texture_reload_placeholder.png")
-            if not os.path.exists(placeholder_path):
-                png_bytes = base64.b64decode(
-                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-                )
-                with open(placeholder_path, "wb") as handle:
-                    handle.write(png_bytes)
-            return placeholder_path
-
-        placeholder_texture = _placeholder_texture_path() if force_refresh else None
         file_nodes = cmds.ls(type="file") or []
-        scene_texture_paths = []
-        for node in file_nodes:
-            try:
-                node_path = cmds.getAttr(f"{node}.fileTextureName") or ""
-                if node_path and os.path.exists(os.path.normpath(node_path)):
-                    scene_texture_paths.append(node_path)
-            except Exception:
-                pass
-
-        def _alternate_texture_path(original_path):
-            original_norm = os.path.normcase(os.path.normpath(original_path))
-            for candidate in scene_texture_paths:
-                if os.path.normcase(os.path.normpath(candidate)) != original_norm:
-                    return candidate
-            return placeholder_texture
-
         prepared = []
         for file_node in file_nodes:
             item = {"node": file_node}
@@ -214,12 +172,9 @@ def setup_product_preview_scene(
                 if force_refresh:
                     if path:
                         try:
-                            reload_path = _alternate_texture_path(path) or ""
-                            cmds.setAttr(f"{file_node}.fileTextureName", reload_path, type="string")
                             cmds.setAttr(f"{file_node}.fileTextureName", path, type="string")
                             item["path_reloaded"] = True
-                            item["reload_placeholder"] = reload_path
-                            item["reload_actions"] = _reload_texture_callbacks(file_node, path)
+                            item["reload_actions"] = [{"action": "fileTextureName_touch"}]
                         except Exception as exc:
                             item["reload_error"] = str(exc)
                     try:
@@ -231,6 +186,9 @@ def setup_product_preview_scene(
                 item["error"] = str(exc)
                 prepared.append(item)
         if force_refresh:
+            viewport_reload_actions = _reload_viewport_textures()
+            for item in prepared:
+                item["viewport_reload_actions"] = viewport_reload_actions
             try:
                 cmds.refresh(force=True)
             except Exception:
@@ -239,16 +197,14 @@ def setup_product_preview_scene(
 
     def _reset_viewport_cache():
         try:
-            panels = cmds.ogs(reset=True) or []
-            if isinstance(panels, str):
-                panels = [panels]
+            mel.eval("ogs -reset;")
             try:
                 cmds.refresh(force=True)
             except Exception:
                 pass
-            return {"panels": panels}
+            return {"actions": [{"action": "ogs_reset"}]}
         except Exception as exc:
-            return {"error": str(exc), "panels": []}
+            return {"error": str(exc), "actions": []}
 
     if not name:
         raise ValueError("name is required.")
@@ -294,6 +250,14 @@ def setup_product_preview_scene(
     else:
         camera_position = _validate_vector(camera_position, 3, "camera_position")
 
+    refreshed_textures = []
+    if not refresh_textures:
+        _prepare_file_textures(False)
+        viewport_cache_reset = {"panels": []}
+    else:
+        viewport_cache_reset = _reset_viewport_cache()
+        refreshed_textures = _prepare_file_textures(True)
+
     for suffix in ["camera", "key_light", "fill_light", "rim_light"]:
         _safe_delete(f"{name}_{suffix}")
 
@@ -322,9 +286,6 @@ def setup_product_preview_scene(
     except Exception:
         pass
 
-    refreshed_textures = []
-    if not refresh_textures:
-        _prepare_file_textures(False)
     panels = cmds.getPanel(type="modelPanel") or []
     configured_panels = []
     for panel in panels:
@@ -352,9 +313,11 @@ def setup_product_preview_scene(
         except Exception:
             continue
 
-    viewport_cache_reset = _reset_viewport_cache() if refresh_textures else {"panels": []}
     if refresh_textures:
-        refreshed_textures = _prepare_file_textures(True)
+        try:
+            mel.eval("ogs -reloadTextures;")
+        except Exception:
+            pass
 
     try:
         cmds.refresh(force=True)
