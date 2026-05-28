@@ -6,6 +6,8 @@ def inspect_mesh_quality(
     operation: str = "inspect",
     issue_types: List[str] = None,
     area_epsilon: float = 1.0e-8,
+    edge_length_epsilon: float = 1.0e-5,
+    face_aspect_threshold: float = 20.0,
     high_valence_threshold: int = 8,
     select_components: bool = False,
     max_items: int = 200,
@@ -18,6 +20,7 @@ def inspect_mesh_quality(
     - invalid_edges, invalid_vertices
     - triangles, ngons
     - zero_area_faces, zero_uv_area_faces
+    - short_edges, skinny_faces
     - isolated_vertices
     - high_valence_vertices
 
@@ -109,6 +112,12 @@ def inspect_mesh_quality(
     area_epsilon = _validate_scalar(area_epsilon, "area_epsilon")
     if area_epsilon < 0.0:
         raise ValueError("area_epsilon must be greater than or equal to zero.")
+    edge_length_epsilon = _validate_scalar(edge_length_epsilon, "edge_length_epsilon")
+    if edge_length_epsilon < 0.0:
+        raise ValueError("edge_length_epsilon must be greater than or equal to zero.")
+    face_aspect_threshold = _validate_scalar(face_aspect_threshold, "face_aspect_threshold")
+    if face_aspect_threshold < 1.0:
+        raise ValueError("face_aspect_threshold must be greater than or equal to 1.")
     high_valence_threshold = _validate_int(high_valence_threshold, "high_valence_threshold", 1)
     max_items = _validate_int(max_items, "max_items", 1)
 
@@ -123,6 +132,8 @@ def inspect_mesh_quality(
         "ngons",
         "zero_area_faces",
         "zero_uv_area_faces",
+        "short_edges",
+        "skinny_faces",
         "isolated_vertices",
         "high_valence_vertices",
     ]
@@ -152,6 +163,19 @@ def inspect_mesh_quality(
 
     issues = {}
 
+    points = mesh_fn.getPoints(om.MSpace.kWorld)
+    edge_lengths = {}
+
+    def _edge_length(edge_id):
+        if edge_id not in edge_lengths:
+            vertex_a, vertex_b = mesh_fn.getEdgeVertices(edge_id)
+            point_a = points[int(vertex_a)]
+            point_b = points[int(vertex_b)]
+            edge_lengths[edge_id] = float(
+                ((point_a.x - point_b.x) ** 2 + (point_a.y - point_b.y) ** 2 + (point_a.z - point_b.z) ** 2) ** 0.5
+            )
+        return edge_lengths[edge_id]
+
     if "border_edges" in clean_issue_types:
         edge_it = om.MItMeshEdge(dag_path)
         components = []
@@ -165,6 +189,27 @@ def inspect_mesh_quality(
             edge_it.next()
         issues["border_edges"] = _issue_record(components, records)
 
+    if "short_edges" in clean_issue_types:
+        edge_it = om.MItMeshEdge(dag_path)
+        components = []
+        records = []
+        while not edge_it.isDone():
+            edge_id = int(edge_it.index())
+            length = _edge_length(edge_id)
+            if length <= edge_length_epsilon:
+                component = _component(prefix_name, "e", edge_id)
+                vertex_a, vertex_b = mesh_fn.getEdgeVertices(edge_id)
+                components.append(component)
+                records.append(
+                    {
+                        "component": component,
+                        "length": length,
+                        "vertices": [int(vertex_a), int(vertex_b)],
+                    }
+                )
+            edge_it.next()
+        issues["short_edges"] = _issue_record(components, records)
+
     for poly_info_type in ["nonmanifold_edges", "nonmanifold_vertices", "lamina_faces", "invalid_edges", "invalid_vertices"]:
         if poly_info_type in clean_issue_types:
             issues[poly_info_type] = _issue_record(_poly_info_components(poly_info_type))
@@ -174,10 +219,12 @@ def inspect_mesh_quality(
     ngon_components = []
     zero_area_components = []
     zero_uv_area_components = []
+    skinny_face_components = []
     triangle_records = []
     ngon_records = []
     zero_area_records = []
     zero_uv_records = []
+    skinny_face_records = []
     while not polygon_it.isDone():
         face_id = int(polygon_it.index())
         face_component = _component(prefix_name, "f", face_id)
@@ -200,6 +247,27 @@ def inspect_mesh_quality(
             if zero_uv:
                 zero_uv_area_components.append(face_component)
                 zero_uv_records.append({"component": face_component, "vertex_count": vertex_count})
+        if "skinny_faces" in clean_issue_types:
+            edge_ids = [int(edge_id) for edge_id in polygon_it.getEdges()]
+            lengths = [_edge_length(edge_id) for edge_id in edge_ids]
+            nonzero_lengths = [length for length in lengths if length > 1.0e-12]
+            if nonzero_lengths:
+                shortest = min(nonzero_lengths)
+                longest = max(nonzero_lengths)
+                aspect_ratio = longest / shortest
+                if aspect_ratio >= face_aspect_threshold:
+                    skinny_face_components.append(face_component)
+                    skinny_face_records.append(
+                        {
+                            "component": face_component,
+                            "vertex_count": vertex_count,
+                            "area": area,
+                            "shortest_edge_length": shortest,
+                            "longest_edge_length": longest,
+                            "aspect_ratio": aspect_ratio,
+                            "edges": [_component(prefix_name, "e", edge_id) for edge_id in edge_ids],
+                        }
+                    )
         polygon_it.next()
 
     if "triangles" in clean_issue_types:
@@ -210,6 +278,8 @@ def inspect_mesh_quality(
         issues["zero_area_faces"] = _issue_record(zero_area_components, zero_area_records)
     if "zero_uv_area_faces" in clean_issue_types:
         issues["zero_uv_area_faces"] = _issue_record(zero_uv_area_components, zero_uv_records)
+    if "skinny_faces" in clean_issue_types:
+        issues["skinny_faces"] = _issue_record(skinny_face_components, skinny_face_records)
 
     if "isolated_vertices" in clean_issue_types or "high_valence_vertices" in clean_issue_types:
         vertex_it = om.MItMeshVertex(dag_path)
@@ -263,6 +333,8 @@ def inspect_mesh_quality(
         "operation": operation,
         "counts": counts,
         "area_epsilon": area_epsilon,
+        "edge_length_epsilon": edge_length_epsilon,
+        "face_aspect_threshold": face_aspect_threshold,
         "high_valence_threshold": high_valence_threshold,
         "issue_types": clean_issue_types,
         "summary": summary,
