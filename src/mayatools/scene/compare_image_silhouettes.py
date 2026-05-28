@@ -12,6 +12,8 @@ def compare_image_silhouettes(
     mask_mode: str = "foreground",
     fill_holes: bool = True,
     background_color: List[float] = None,
+    reference_background_color: List[float] = None,
+    candidate_background_color: List[float] = None,
     background_tolerance: float = 0.08,
     alpha_threshold: float = 0.05,
     luminance_threshold: float = 0.5,
@@ -32,6 +34,9 @@ def compare_image_silhouettes(
     auto_crop_reference: bool = False,
     auto_crop_candidate: bool = False,
     auto_crop_padding_pixels: int = 0,
+    band_edges: List[float] = None,
+    correction_profile_samples: int = None,
+    scale_range: List[float] = None,
 ) -> Dict[str, Any]:
     """Compare two image silhouettes and optionally write an overlap diagnostic.
 
@@ -48,7 +53,11 @@ def compare_image_silhouettes(
     tools. This is useful for generic visual QA of modeled products, props,
     icons, sprites, masks, decals, or rendered assets against reference images.
     Optional foreground auto-cropping is useful when renders are centered on a
-    larger preview canvas.
+    larger preview canvas. reference_background_color and
+    candidate_background_color can be used when the compared images use
+    different studio backgrounds. band_edges, correction_profile_samples, and
+    scale_range are convenience aliases for the normalized band/profile
+    arguments.
     """
     import math
     import os
@@ -527,6 +536,19 @@ def compare_image_silhouettes(
     compare_height = _validate_int(compare_height, "compare_height", 8)
     row_sample_count = _validate_int(row_sample_count, "row_sample_count", 2)
     band_sample_count = _validate_int(band_sample_count, "band_sample_count", 2)
+    if band_edges is not None:
+        if band_edges_normalized is not None:
+            raise ValueError("Provide only one of band_edges or band_edges_normalized.")
+        band_edges_normalized = band_edges
+    if correction_profile_samples is not None:
+        if correction_profile_sample_count != 0:
+            raise ValueError("Provide only one of correction_profile_samples or correction_profile_sample_count.")
+        correction_profile_sample_count = correction_profile_samples
+    if scale_range is not None:
+        if correction_profile_scale_range is not None:
+            raise ValueError("Provide only one of scale_range or correction_profile_scale_range.")
+        correction_profile_scale_range = scale_range
+
     correction_profile_sample_count = _validate_int(correction_profile_sample_count, "correction_profile_sample_count", 0)
     if correction_profile_sample_count == 1:
         raise ValueError("correction_profile_sample_count must be 0 or an integer greater than or equal to 2.")
@@ -580,10 +602,28 @@ def compare_image_silhouettes(
         raise ValueError(f"Unable to load candidate image: {candidate_image_path}")
 
     clean_background_color = _normalize_color(background_color, "background_color") if background_color else None
+    clean_reference_background_color = (
+        _normalize_color(reference_background_color, "reference_background_color")
+        if reference_background_color
+        else None
+    )
+    clean_candidate_background_color = (
+        _normalize_color(candidate_background_color, "candidate_background_color")
+        if candidate_background_color
+        else None
+    )
     reference_search_bbox = _resolve_bbox(reference_image, reference_bbox_pixels, reference_bbox_normalized, "reference")
     candidate_search_bbox = _resolve_bbox(candidate_image, candidate_bbox_pixels, candidate_bbox_normalized, "candidate")
-    reference_background = clean_background_color or _estimate_background(reference_image, reference_search_bbox)
-    candidate_background = clean_background_color or _estimate_background(candidate_image, candidate_search_bbox)
+    reference_background = (
+        clean_reference_background_color
+        or clean_background_color
+        or _estimate_background(reference_image, reference_search_bbox)
+    )
+    candidate_background = (
+        clean_candidate_background_color
+        or clean_background_color
+        or _estimate_background(candidate_image, candidate_search_bbox)
+    )
     if auto_crop_reference and reference_bbox_pixels is None and reference_bbox_normalized is None:
         reference_bbox = _auto_crop_bbox(
             reference_image,
