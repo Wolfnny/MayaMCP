@@ -9,6 +9,7 @@ def clean_image_alpha_edges(
     unmatte_background: bool = False,
     unmatte_strength: float = 1.0,
     erode_alpha_pixels: int = 0,
+    feather_alpha_pixels: int = 0,
     fill_transparent_rgb: bool = True,
     overwrite: bool = True,
 ) -> Dict[str, Any]:
@@ -20,7 +21,9 @@ def clean_image_alpha_edges(
     viewport filtering does not reveal black or empty padding. When the source
     is known to be premultiplied or matted over a background, it can also remove
     matte/background color contamination from semi-transparent pixels and
-    optionally erode a thin alpha fringe.
+    optionally erode a thin alpha fringe. feather_alpha_pixels fades the
+    remaining alpha near transparent edges, which is useful for projected
+    decals or partial photo textures that should not end with a hard boundary.
     """
     import os
     from collections import deque
@@ -108,6 +111,57 @@ def clean_image_alpha_edges(
                     result[y][x] = 1
         return result
 
+    def _feather_alpha(mask, radius):
+        if radius <= 0:
+            return 0
+        max_distance = radius + 1
+        distances = [[-1 for _ in range(width)] for _ in range(height)]
+        queue = deque()
+        for y in range(height):
+            for x in range(width):
+                if not mask[y][x]:
+                    continue
+                touches_transparent = False
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx = x + dx
+                    ny = y + dy
+                    if nx < 0 or nx >= width or ny < 0 or ny >= height or not mask[ny][nx]:
+                        touches_transparent = True
+                        break
+                if touches_transparent:
+                    distances[y][x] = 1
+                    queue.append((x, y, 1))
+
+        while queue:
+            x, y, distance = queue.popleft()
+            if distance >= max_distance:
+                continue
+            next_distance = distance + 1
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx = x + dx
+                ny = y + dy
+                if nx < 0 or nx >= width or ny < 0 or ny >= height:
+                    continue
+                if not mask[ny][nx] or distances[ny][nx] != -1:
+                    continue
+                distances[ny][nx] = next_distance
+                queue.append((nx, ny, next_distance))
+
+        feathered = 0
+        for y in range(height):
+            for x in range(width):
+                distance = distances[y][x]
+                if distance <= 0 or distance >= max_distance:
+                    continue
+                color = image.pixelColor(x, y)
+                original_alpha = color.alpha()
+                faded_alpha = int(round(original_alpha * (distance / float(max_distance))))
+                if faded_alpha != original_alpha:
+                    color.setAlpha(max(0, min(255, faded_alpha)))
+                    image.setPixelColor(x, y, color)
+                    feathered += 1
+        return feathered
+
     if not image_path:
         raise ValueError("image_path is required.")
     normalized_image_path = os.path.normpath(image_path)
@@ -117,6 +171,7 @@ def clean_image_alpha_edges(
     alpha_threshold = _clamp(_validate_scalar(alpha_threshold, "alpha_threshold"))
     unmatte_strength = _clamp(_validate_scalar(unmatte_strength, "unmatte_strength"))
     erode_alpha_pixels = _validate_int(erode_alpha_pixels, "erode_alpha_pixels", 0)
+    feather_alpha_pixels = _validate_int(feather_alpha_pixels, "feather_alpha_pixels", 0)
     if not isinstance(unmatte_background, bool):
         raise ValueError("unmatte_background must be a boolean.")
     if not isinstance(fill_transparent_rgb, bool):
@@ -175,6 +230,8 @@ def clean_image_alpha_edges(
                         image.setPixelColor(x, y, color)
                         thresholded_alpha_pixels += 1
         visible_mask = eroded
+
+    feathered_alpha_pixels = _feather_alpha(visible_mask, feather_alpha_pixels)
 
     filled_rgb_pixels = 0
     if fill_transparent_rgb:
@@ -238,8 +295,10 @@ def clean_image_alpha_edges(
         "unmatte_background": bool(unmatte_background),
         "unmatte_strength": unmatte_strength,
         "erode_alpha_pixels": erode_alpha_pixels,
+        "feather_alpha_pixels": feather_alpha_pixels,
         "fill_transparent_rgb": bool(fill_transparent_rgb),
         "thresholded_alpha_pixels": thresholded_alpha_pixels,
+        "feathered_alpha_pixels": feathered_alpha_pixels,
         "unmatte_pixels": unmatte_pixels,
         "filled_rgb_pixels": filled_rgb_pixels,
         "visible_pixels": visible_pixels,
