@@ -23,6 +23,7 @@ def assign_cylindrical_image_material(
     material_type: str = "lambert",
     color_attribute: str = "color",
     use_alpha: bool = False,
+    opacity: float = 1.0,
     link_uv_set: bool = True,
     min_assign_faces: int = 1,
     dry_run: bool = False,
@@ -35,7 +36,9 @@ def assign_cylindrical_image_material(
     threshold. It is generic infrastructure for projection decals, labels,
     panels, surface markings, trim masks, partial wraps, and photo-to-surface
     workflows on bottles, cans, tubes, cups, and other near-lathed meshes
-    without relying on separate floating cards.
+    without relying on separate floating cards. opacity controls the material's
+    overall visibility; when use_alpha is enabled it multiplies the texture
+    alpha before driving transparency.
 
     outside_axis_mode controls how samples beyond axis_range are handled:
     "extend" preserves unclamped coordinates, "clamp" pins them to the nearest
@@ -277,15 +280,26 @@ def assign_cylindrical_image_material(
             raise ValueError(f"Shader {shader} does not have attribute {target_attribute}.")
         cmds.connectAttr(f"{file_node}.outColor", f"{shader}.{target_attribute}", force=True)
         alpha_node = None
+        alpha_opacity_node = None
         if use_alpha and material_type != "surfaceShader" and cmds.attributeQuery("transparency", node=shader, exists=True):
+            alpha_source = f"{file_node}.outAlpha"
+            if opacity < 1.0:
+                alpha_opacity_node = cmds.shadingNode("multiplyDivide", asUtility=True, name=f"{shader_name}_alpha_opacity")
+                cmds.setAttr(f"{alpha_opacity_node}.input2", opacity, opacity, opacity, type="double3")
+                for channel in ["X", "Y", "Z"]:
+                    cmds.connectAttr(alpha_source, f"{alpha_opacity_node}.input1{channel}", force=True)
+                alpha_source = f"{alpha_opacity_node}.outputX"
             alpha_node = cmds.shadingNode("reverse", asUtility=True, name=f"{shader_name}_alpha_reverse")
             for channel in ["X", "Y", "Z"]:
-                cmds.connectAttr(f"{file_node}.outAlpha", f"{alpha_node}.input{channel}", force=True)
+                cmds.connectAttr(alpha_source, f"{alpha_node}.input{channel}", force=True)
             cmds.connectAttr(f"{alpha_node}.output", f"{shader}.transparency", force=True)
+        elif opacity < 1.0 and material_type != "surfaceShader" and cmds.attributeQuery("transparency", node=shader, exists=True):
+            transparency = 1.0 - opacity
+            cmds.setAttr(f"{shader}.transparency", transparency, transparency, transparency, type="double3")
         shading_group = cmds.sets(name=f"{shader_name}SG", empty=True, renderable=True, noSurfaceShader=True)
         cmds.connectAttr(f"{shader}.outColor", f"{shading_group}.surfaceShader", force=True)
         uv_link_plug, uv_linked = _link_texture_to_uv_set(file_node)
-        return shader, file_node, place2d, alpha_node, shading_group, uv_link_plug, uv_linked
+        return shader, file_node, place2d, alpha_node, alpha_opacity_node, shading_group, uv_link_plug, uv_linked
 
     if not object_name:
         raise ValueError("object_name is required.")
@@ -304,6 +318,7 @@ def assign_cylindrical_image_material(
         axis_range = _validate_vector(axis_range, 2, "axis_range")
     angle_range_degrees = _validate_vector(angle_range_degrees, 2, "angle_range_degrees")
     threshold = _clamp(_validate_scalar(threshold, "threshold"))
+    opacity = _clamp(_validate_scalar(opacity, "opacity"))
     min_assign_faces = _validate_int(min_assign_faces, "min_assign_faces", 0)
 
     axis = axis.lower().strip()
@@ -444,6 +459,7 @@ def assign_cylindrical_image_material(
     file_node = None
     place2d = None
     alpha_node = None
+    alpha_opacity_node = None
     shading_group = None
     uv_link_plug = None
     uv_linked = False
@@ -452,7 +468,7 @@ def assign_cylindrical_image_material(
         if material_name is None:
             base_name = os.path.splitext(os.path.basename(normalized_image_path))[0] or "projected"
             material_name = name or f"{base_name}_cylindrical_projected_mat"
-        shader, file_node, place2d, alpha_node, shading_group, uv_link_plug, uv_linked = _make_texture_material(material_name)
+        shader, file_node, place2d, alpha_node, alpha_opacity_node, shading_group, uv_link_plug, uv_linked = _make_texture_material(material_name)
         for start in range(0, len(matched_faces), 1000):
             batch = matched_faces[start:start + 1000]
             components = [f"{object_name}.f[{face_index}]" for face_index in batch]
@@ -480,6 +496,7 @@ def assign_cylindrical_image_material(
         "sample_aggregation": sample_aggregation,
         "flip_u": bool(flip_u),
         "flip_v": bool(flip_v),
+        "opacity": opacity,
         "link_uv_set": bool(link_uv_set),
         "dry_run": bool(dry_run),
         "face_count": len(face_counts),
@@ -495,6 +512,7 @@ def assign_cylindrical_image_material(
         "file_node": file_node,
         "place2d": place2d,
         "alpha_node": alpha_node,
+        "alpha_opacity_node": alpha_opacity_node,
         "shading_group": shading_group,
         "uv_link_plug": uv_link_plug,
         "uv_linked": bool(uv_linked),
