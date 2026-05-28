@@ -22,6 +22,8 @@ def edit_mesh_topology(
     - poke_faces: poke selected faces into triangles
     - chip_off_faces: detach or duplicate selected faces with optional transform
     - bridge_edges: bridge selected edge loops or edge groups
+    - connect_edges: connect selected edges across adjacent faces
+    - insert_edge_loop: insert a support loop from seed edges by connecting the edge ring
     - subdivide_faces: subdivide selected faces
     - triangulate_faces: triangulate selected faces
     - quadrangulate_faces: convert selected triangles to quads where possible
@@ -129,6 +131,28 @@ def edit_mesh_topology(
                 ids.append(int(match.group(1)))
         return sorted(set(ids))
 
+    def _unique(items):
+        seen = set()
+        result = []
+        for item in cmds.ls(items, flatten=True) or []:
+            if item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+        return result
+
+    def _poly_select_edges(flag_name, edge_ids):
+        results = []
+        for edge_id in edge_ids:
+            output = cmds.polySelect(
+                object_name,
+                asSelectString=True,
+                noSelection=True,
+                **{flag_name: int(edge_id)},
+            ) or []
+            results.extend(output)
+        return _unique(results)
+
     def _counts():
         return {
             "vertices": int(cmds.polyEvaluate(object_name, vertex=True)),
@@ -169,6 +193,8 @@ def edit_mesh_topology(
         "poke_faces",
         "chip_off_faces",
         "bridge_edges",
+        "connect_edges",
+        "insert_edge_loop",
         "subdivide_faces",
         "triangulate_faces",
         "quadrangulate_faces",
@@ -222,6 +248,75 @@ def edit_mesh_topology(
             localScale=local_scale,
         )
         return _selection_result(node, edges, before_counts)
+
+    if operation in {"connect_edges", "insert_edge_loop"}:
+        edges = _convert(_resolve_components("edge"), "edge")
+        edge_ids = _component_ids(edges, "e")
+        if not edge_ids:
+            raise ValueError(f"{operation} requires edge components.")
+
+        if operation == "insert_edge_loop":
+            expanded = _poly_select_edges("edgeRing", edge_ids)
+            if expanded:
+                edges = expanded
+                edge_ids = _component_ids(edges, "e")
+        else:
+            expand = str(parameters.get("expand", "none")).lower().strip()
+            expand_flags = {
+                "none": None,
+                "edge_ring": "edgeRing",
+                "edge_loop": "edgeLoop",
+                "edge_loop_or_border": "edgeLoopOrBorder",
+                "edge_border": "edgeBorder",
+            }
+            if expand not in expand_flags:
+                raise ValueError("parameters.expand must be none, edge_ring, edge_loop, edge_loop_or_border, or edge_border.")
+            if expand_flags[expand]:
+                expanded = _poly_select_edges(expand_flags[expand], edge_ids)
+                if expanded:
+                    edges = expanded
+                    edge_ids = _component_ids(edges, "e")
+
+        if len(edge_ids) < 2:
+            raise ValueError(f"{operation} requires at least two resolved edges after expansion.")
+
+        insert_with_edge_flow = bool(parameters.get("insert_with_edge_flow", False))
+        adjust_edge_flow = _validate_scalar(parameters.get("adjust_edge_flow", 0.0), "adjust_edge_flow")
+        old_selection = cmds.ls(selection=True, flatten=True) or []
+        cmds.select(edges, replace=True)
+        try:
+            node = cmds.polyConnectComponents(
+                constructionHistory=construction_history,
+                insertWithEdgeFlow=insert_with_edge_flow,
+                adjustEdgeFlow=adjust_edge_flow,
+            )
+        finally:
+            if bool(parameters.get("restore_selection", False)):
+                if old_selection:
+                    cmds.select(old_selection, replace=True)
+                else:
+                    cmds.select(clear=True)
+
+        after_counts = _counts()
+        if not _changed(before_counts, after_counts):
+            raise RuntimeError(f"{operation} did not change mesh topology. Try a different seed edge or selected edge set.")
+        return {
+            "success": True,
+            "object_name": object_name,
+            "operation": operation,
+            "node": node,
+            "input_component_count": len(edges),
+            "input_components_preview": edges[:max_preview],
+            "edge_ids": edge_ids[:max_preview],
+            "edge_id_count": len(edge_ids),
+            "insert_with_edge_flow": insert_with_edge_flow,
+            "adjust_edge_flow": adjust_edge_flow,
+            "counts_before": before_counts,
+            "counts_after": after_counts,
+            "new_edge_count_delta": after_counts["edges"] - before_counts["edges"],
+            "new_face_count_delta": after_counts["faces"] - before_counts["faces"],
+            "new_vertex_count_delta": after_counts["vertices"] - before_counts["vertices"],
+        }
 
     if operation in {"bevel_edges", "bevel_vertices"}:
         target_type = "edge" if operation == "bevel_edges" else "vertex"

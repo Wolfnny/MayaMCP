@@ -101,6 +101,37 @@ def mesh_component_operations(
         vertices = cmds.ls(converted, flatten=True) or []
         return sorted(set(vertices), key=lambda item: int(re.search(r"\.vtx\[(\d+)\]$", item).group(1)) if re.search(r"\.vtx\[(\d+)\]$", item) else -1)
 
+    def _component_ids(items, kind):
+        pattern = re.compile(rf"\.{kind}\[(\d+)\]$")
+        ids = []
+        for item in cmds.ls(items, flatten=True) or []:
+            match = pattern.search(item)
+            if match:
+                ids.append(int(match.group(1)))
+        return sorted(set(ids))
+
+    def _unique(items):
+        seen = set()
+        result = []
+        for item in cmds.ls(items, flatten=True) or []:
+            if item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+        return result
+
+    def _poly_select_edges(flag_name, edge_ids):
+        results = []
+        for edge_id in edge_ids:
+            output = cmds.polySelect(
+                object_name,
+                asSelectString=True,
+                noSelection=True,
+                **{flag_name: int(edge_id)},
+            ) or []
+            results.extend(output)
+        return _unique(results)
+
     def _counts():
         return {
             "vertices": int(cmds.polyEvaluate(object_name, vertex=True)),
@@ -232,40 +263,29 @@ def mesh_component_operations(
 
     if operation == "insert_edge_loop":
         edges = _resolve_components("edge")
-        if not any(".e[" in item for item in edges):
+        edges = cmds.ls(cmds.polyListComponentConversion(edges, toEdge=True) or [], flatten=True) or []
+        edge_ids = _component_ids(edges, "e")
+        if not edge_ids:
             raise ValueError("insert_edge_loop requires edge components.")
-        divisions = int(parameters.get("divisions", 1))
-        weight = _validate_scalar(parameters.get("weight", 0.5), "weight")
-        smoothing_angle = _validate_scalar(parameters.get("smoothing_angle", 30.0), "smoothing_angle")
+        expanded = _poly_select_edges("edgeRing", edge_ids)
+        if expanded:
+            edges = expanded
+            edge_ids = _component_ids(edges, "e")
+        if len(edge_ids) < 2:
+            raise ValueError("insert_edge_loop requires at least two resolved edges after edge-ring expansion.")
         construction_history = bool(parameters.get("construction_history", True))
         insert_with_edge_flow = bool(parameters.get("insert_with_edge_flow", False))
-        nodes = []
-        for edge in edges:
-            try:
-                node = cmds.polySplitRing(
-                    edge,
-                    constructionHistory=construction_history,
-                    splitType=1,
-                    divisions=divisions,
-                    weight=weight,
-                    smoothingAngle=smoothing_angle,
-                    insertWithEdgeFlow=insert_with_edge_flow,
-                )
-            except TypeError:
-                node = cmds.polySplitRing(
-                    edge,
-                    ch=construction_history,
-                    splitType=1,
-                    divisions=divisions,
-                    weight=weight,
-                    smoothingAngle=smoothing_angle,
-                )
-            nodes.append(node)
+        adjust_edge_flow = _validate_scalar(parameters.get("adjust_edge_flow", 0.0), "adjust_edge_flow")
+        cmds.select(edges, replace=True)
+        node = cmds.polyConnectComponents(
+            constructionHistory=construction_history,
+            insertWithEdgeFlow=insert_with_edge_flow,
+            adjustEdgeFlow=adjust_edge_flow,
+        )
         after_counts = _counts()
         if after_counts == before_counts:
             raise RuntimeError(
-                "insert_edge_loop did not change mesh topology. "
-                "Use insert_support_loop with axis and position for a plane-based support cut."
+                "insert_edge_loop did not change mesh topology. Try a different seed edge or selected edge set."
             )
         return {
             "success": True,
@@ -273,9 +293,11 @@ def mesh_component_operations(
             "operation": operation,
             "edge_count": len(edges),
             "edges_preview": edges[:50],
-            "divisions": divisions,
-            "weight": weight,
-            "nodes": nodes,
+            "edge_ids": edge_ids[:50],
+            "edge_id_count": len(edge_ids),
+            "node": node,
+            "insert_with_edge_flow": insert_with_edge_flow,
+            "adjust_edge_flow": adjust_edge_flow,
             "counts_before": before_counts,
             "counts_after": after_counts,
         }
