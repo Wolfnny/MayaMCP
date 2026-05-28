@@ -266,7 +266,9 @@ def setup_product_preview_scene(
     except Exception:
         pass
 
-    refreshed_textures = _prepare_file_textures(refresh_textures)
+    refreshed_textures = []
+    if not refresh_textures:
+        _prepare_file_textures(False)
     panels = cmds.getPanel(type="modelPanel") or []
     configured_panels = []
     for panel in panels:
@@ -295,6 +297,8 @@ def setup_product_preview_scene(
             continue
 
     viewport_cache_reset = _reset_viewport_cache() if refresh_textures else {"panels": []}
+    if refresh_textures:
+        refreshed_textures = _prepare_file_textures(True)
 
     try:
         cmds.refresh(force=True)

@@ -405,7 +405,7 @@ def setup_turntable_preview_scene(
     except Exception:
         pass
 
-    refreshed_textures = _refresh_file_textures() if refresh_textures else []
+    refreshed_textures = []
 
     panels = cmds.getPanel(type="modelPanel") or []
     configured_panels = []
@@ -435,6 +435,8 @@ def setup_turntable_preview_scene(
             continue
 
     viewport_cache_reset = _reset_viewport_cache() if refresh_textures else {"panels": []}
+    if refresh_textures:
+        refreshed_textures = _refresh_file_textures()
 
     frame_results = []
     image_paths = []
