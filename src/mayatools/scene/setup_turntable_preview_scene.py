@@ -168,13 +168,21 @@ def setup_turntable_preview_scene(
         for file_node in cmds.ls(type="file") or []:
             try:
                 path = cmds.getAttr(f"{file_node}.fileTextureName") or ""
+                item = {"node": file_node, "path": path, "exists": bool(path and os.path.exists(os.path.normpath(path)))}
                 if cmds.attributeQuery("disableFileLoad", node=file_node, exists=True):
                     cmds.setAttr(f"{file_node}.disableFileLoad", 0)
+                if path:
+                    try:
+                        cmds.setAttr(f"{file_node}.fileTextureName", "", type="string")
+                        cmds.setAttr(f"{file_node}.fileTextureName", path, type="string")
+                        item["path_reloaded"] = True
+                    except Exception as exc:
+                        item["reload_error"] = str(exc)
                 try:
                     cmds.dgdirty(file_node)
                 except Exception:
                     pass
-                refreshed.append({"node": file_node, "path": path, "exists": bool(path and os.path.exists(os.path.normpath(path)))})
+                refreshed.append(item)
             except Exception as exc:
                 refreshed.append({"node": file_node, "error": str(exc)})
         try:

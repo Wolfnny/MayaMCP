@@ -159,6 +159,13 @@ def setup_product_preview_scene(
                 if cmds.attributeQuery("disableFileLoad", node=file_node, exists=True):
                     cmds.setAttr(f"{file_node}.disableFileLoad", 0)
                 if force_refresh:
+                    if path:
+                        try:
+                            cmds.setAttr(f"{file_node}.fileTextureName", "", type="string")
+                            cmds.setAttr(f"{file_node}.fileTextureName", path, type="string")
+                            item["path_reloaded"] = True
+                        except Exception as exc:
+                            item["reload_error"] = str(exc)
                     try:
                         cmds.dgdirty(file_node)
                     except Exception:
