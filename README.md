@@ -40,6 +40,7 @@ Here is a list of some of the tools registered with Maya MCP.
 | refresh_file_textures | Refresh Maya file texture nodes, re-enable file loading, touch texture paths, and reset textured viewport display. |
 | extract_image_region_texture | Crop explicitly or by foreground auto-bbox, optionally background-mask, and remap a reference image region into a reusable texture file for labels, decals, panels, caps, silhouettes, or trim. |
 | extract_image_matte_texture | Extract cropped textures with alpha mattes derived from color, hue, foreground, or alpha image regions. |
+| adjust_image_colors | Write an adjusted texture copy with channel gain/bias, brightness, contrast, saturation, value, gamma, optional alpha, and alpha/foreground/luminance/HSV masks. |
 | extract_image_detail_mask | Extract dark, bright, absolute-contrast, or edge detail masks from reference images for texture cleanup or geometry relief. |
 | extract_image_contours | Extract traced and filtered image-mask contours and optionally create planar or cylindrical Maya curves. |
 | create_textured_label | Create a UV-mapped curved label mesh around a cylindrical or profiled lathed object and apply an image texture directly through UVs, with optional alpha and opacity. |
