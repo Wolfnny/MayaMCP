@@ -31,9 +31,11 @@ def map_silhouette_errors_to_components(
     row samples from compare_image_silhouettes plus the candidate playblast
     framing, converts high-error rows back to world-space view bands, and
     reports the left/right projected extreme vertices on the target meshes. It
-    helps an artist decide which vertices, support loops, lips, bevels, or
-    profile areas to edit after comparing any product, prop, character, vehicle,
-    bottle, or other mesh silhouette against a reference image.
+    helps an artist decide which vertices, edges, support loops, lips, bevels,
+    or profile areas to edit after comparing any product, prop, character,
+    vehicle, bottle, or other mesh silhouette against a reference image. Rows
+    may pass through polygon edges without containing vertices, so the report
+    includes both nearby vertices and edge crossings at the sampled row.
     """
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
@@ -209,6 +211,69 @@ def map_silhouette_errors_to_components(
             "right": right,
         }
 
+    def _edge_records_for_row(shape, prefix, center_screen_y, band_world):
+        mesh_fn = _mesh_fn(shape)
+        points = mesh_fn.getPoints(om.MSpace.kWorld)
+        lower = center_screen_y - band_world
+        upper = center_screen_y + band_world
+        edge_it = om.MItMeshEdge(_dag_path(shape))
+        records = []
+        while not edge_it.isDone():
+            edge_id = int(edge_it.index())
+            vertex_a = int(edge_it.vertexId(0))
+            vertex_b = int(edge_it.vertexId(1))
+            point_a = points[vertex_a]
+            point_b = points[vertex_b]
+            vector_a = om.MVector(point_a.x, point_a.y, point_a.z)
+            vector_b = om.MVector(point_b.x, point_b.y, point_b.z)
+            screen_y_a = float(vector_a * up_vector)
+            screen_y_b = float(vector_b * up_vector)
+            edge_min_y = min(screen_y_a, screen_y_b)
+            edge_max_y = max(screen_y_a, screen_y_b)
+            crosses_center = edge_min_y <= center_screen_y <= edge_max_y
+            overlaps_band = edge_max_y >= lower and edge_min_y <= upper
+            if not crosses_center and not overlaps_band:
+                edge_it.next()
+                continue
+
+            if abs(screen_y_b - screen_y_a) <= 1.0e-12:
+                if abs(screen_y_a - center_screen_y) > band_world:
+                    edge_it.next()
+                    continue
+                interpolation = 0.5
+            else:
+                interpolation = (center_screen_y - screen_y_a) / (screen_y_b - screen_y_a)
+                interpolation = max(0.0, min(1.0, interpolation))
+
+            point = point_a + (point_b - point_a) * interpolation
+            vector = om.MVector(point.x, point.y, point.z)
+            records.append(
+                {
+                    "index": edge_id,
+                    "component": f"{prefix}.e[{edge_id}]",
+                    "vertices": [vertex_a, vertex_b],
+                    "vertex_components": [f"{prefix}.vtx[{vertex_a}]", f"{prefix}.vtx[{vertex_b}]"],
+                    "connected_faces": [int(face_id) for face_id in edge_it.getConnectedFaces()],
+                    "interpolation": float(interpolation),
+                    "position": [float(point.x), float(point.y), float(point.z)],
+                    "screen_x": float(vector * right_axis),
+                    "screen_y": float(vector * up_vector),
+                    "endpoint_screen_y": [screen_y_a, screen_y_b],
+                    "crosses_center": bool(crosses_center),
+                    "overlaps_band": bool(overlaps_band),
+                }
+            )
+            edge_it.next()
+        if not records:
+            return {"crossing_edge_count": 0, "left_edges": [], "right_edges": []}
+        left_edges = sorted(records, key=lambda item: (item["screen_x"], item["index"]))[:clean_extreme_count]
+        right_edges = sorted(records, key=lambda item: (-item["screen_x"], item["index"]))[:clean_extreme_count]
+        return {
+            "crossing_edge_count": len(records),
+            "left_edges": left_edges,
+            "right_edges": right_edges,
+        }
+
     if not target_objects or not isinstance(target_objects, list) or not all(isinstance(item, str) for item in target_objects):
         raise ValueError("target_objects must be a non-empty list of object names.")
     if not isinstance(row_width_samples, list):
@@ -311,18 +376,26 @@ def map_silhouette_errors_to_components(
         object_reports = []
         for shape_info in shapes:
             report = _component_records_for_band(shape_info["shape_name"], shape_info["prefix"], center_screen_y, band_world)
+            edge_report = _edge_records_for_row(shape_info["shape_name"], shape_info["prefix"], center_screen_y, band_world)
             if max_preview == 0:
                 report["left"] = []
                 report["right"] = []
+                edge_report["left_edges"] = []
+                edge_report["right_edges"] = []
             else:
                 report["left"] = report["left"][:max_preview]
                 report["right"] = report["right"][:max_preview]
+                edge_report["left_edges"] = edge_report["left_edges"][:max_preview]
+                edge_report["right_edges"] = edge_report["right_edges"][:max_preview]
             selected_components.extend(item["component"] for item in report["left"])
             selected_components.extend(item["component"] for item in report["right"])
+            selected_components.extend(item["component"] for item in edge_report["left_edges"])
+            selected_components.extend(item["component"] for item in edge_report["right_edges"])
             object_reports.append({
                 "object_name": shape_info["object_name"],
                 "shape_name": shape_info["shape_name"],
                 **report,
+                **edge_report,
             })
         mapped_rows.append({
             **row,
