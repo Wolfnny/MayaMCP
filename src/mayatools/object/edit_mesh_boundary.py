@@ -19,7 +19,8 @@ def edit_mesh_boundary(
     - fill_holes: close selected border loops, or all current border loops when
       no components are provided
     - cap_boundary_loops: create ngon or triangle-fan cap polygons for selected
-      closed border loops using mesh vertex order
+      closed border loops using mesh vertex order. Ngons default to a Maya
+      polyAppendVertex path that reuses existing boundary vertices.
     - planarize_boundary_loops: flatten selected border loop vertices to an
       axis plane or best-fit loop plane before capping, sewing, or welding
 
@@ -412,10 +413,13 @@ def edit_mesh_boundary(
         vertex_count = len([component for component in raw_vertices if component not in boundary_vertices])
         return {"nonmanifold_edges": edge_count, "nonmanifold_vertices": vertex_count}
 
-    def _cap_groups_for_shape(target_shape, component_prefix, groups, target_boundary_data, cap_settings):
+    def _cap_groups_for_shape(target_object, target_shape, component_prefix, groups, target_boundary_data, cap_settings):
         cap_mode = cap_settings["cap_mode"]
+        cap_method = cap_settings["cap_method"]
         point_tolerance = cap_settings["point_tolerance"]
         reverse_winding = cap_settings["reverse_winding"]
+        construction_history = cap_settings["construction_history"]
+        texture = cap_settings["texture"]
         mesh_fn = om.MFnMesh(_mesh_dag(target_shape))
         mesh_points = mesh_fn.getPoints(om.MSpace.kObject)
         reports = []
@@ -431,7 +435,23 @@ def edit_mesh_boundary(
             if reverse_winding:
                 ordered_vertices = list(reversed(ordered_vertices))
             added_faces = []
-            if cap_mode == "ngon":
+            nodes = []
+            effective_cap_method = cap_method
+            if effective_cap_method == "auto":
+                effective_cap_method = "poly_append_vertex" if cap_mode == "ngon" else "api_points"
+            if effective_cap_method == "poly_append_vertex":
+                if cap_mode != "ngon":
+                    raise ValueError("parameters.cap_method poly_append_vertex currently supports cap_mode ngon only.")
+                face_count_before = int(cmds.polyEvaluate(target_object, face=True))
+                cmds.select(target_object, replace=True)
+                nodes.extend(cmds.polyAppendVertex(
+                    append=ordered_vertices,
+                    constructionHistory=construction_history,
+                    texture=texture,
+                ) or [])
+                face_count_after = int(cmds.polyEvaluate(target_object, face=True))
+                added_faces.extend(range(face_count_before, face_count_after))
+            elif cap_mode == "ngon":
                 polygon_points = om.MPointArray([mesh_points[vertex_id] for vertex_id in ordered_vertices])
                 added_faces.append(int(mesh_fn.addPolygon(polygon_points, True, point_tolerance)))
             else:
@@ -452,8 +472,10 @@ def edit_mesh_boundary(
                 "ordered_vertex_count": len(ordered_vertices),
                 "closed": bool(closed),
                 "cap_mode": cap_mode,
+                "cap_method": effective_cap_method,
                 "added_face_count": len(added_faces),
                 "added_faces_preview": [_prefixed_component(component_prefix, "f", face_id) for face_id in added_faces[:max_preview]],
+                "nodes": nodes[:max_preview],
             })
         return reports
 
@@ -632,9 +654,13 @@ def edit_mesh_boundary(
             cap_mode = str(parameters.get("cap_mode", "ngon")).lower().strip()
             if cap_mode not in {"ngon", "triangle_fan"}:
                 raise ValueError("parameters.cap_mode must be ngon or triangle_fan.")
+            cap_method = str(parameters.get("cap_method", "auto")).lower().strip()
+            if cap_method not in {"auto", "poly_append_vertex", "api_points"}:
+                raise ValueError("parameters.cap_method must be auto, poly_append_vertex, or api_points.")
             point_tolerance = _validate_scalar(parameters.get("point_tolerance", 1.0e-6), "point_tolerance")
             if point_tolerance < 0.0:
                 raise ValueError("parameters.point_tolerance must be greater than or equal to zero.")
+            texture = _validate_int(parameters.get("texture", 0), "texture", 0)
             reverse_winding = bool(parameters.get("reverse_winding", False))
             allow_open_chains = bool(parameters.get("allow_open_chains", False))
             validate_on_duplicate = bool(parameters.get("validate_on_duplicate", True))
@@ -642,9 +668,12 @@ def edit_mesh_boundary(
             allow_nonmanifold_result = bool(parameters.get("allow_nonmanifold_result", False))
             cap_settings = {
                 "cap_mode": cap_mode,
+                "cap_method": cap_method,
                 "point_tolerance": point_tolerance,
                 "reverse_winding": reverse_winding,
                 "allow_open_chains": allow_open_chains,
+                "construction_history": construction_history,
+                "texture": texture,
             }
             if validate_on_duplicate:
                 duplicate = cmds.duplicate(object_name, name=f"{object_name}_cap_boundary_preview_tmp")[0]
@@ -653,7 +682,7 @@ def edit_mesh_boundary(
                     duplicate_prefix = _prefix(duplicate_shape)
                     duplicate_boundary_before = _boundary_edge_data_for_shape(duplicate_shape)
                     duplicate_nonmanifold_before = _filtered_nonmanifold_counts(duplicate, duplicate_shape, duplicate_prefix)
-                    _cap_groups_for_shape(duplicate_shape, duplicate_prefix, groups, duplicate_boundary_before, cap_settings)
+                    _cap_groups_for_shape(duplicate, duplicate_shape, duplicate_prefix, groups, duplicate_boundary_before, cap_settings)
                     duplicate_boundary_after = _boundary_edge_data_for_shape(duplicate_shape)
                     duplicate_nonmanifold_after = _filtered_nonmanifold_counts(duplicate, duplicate_shape, duplicate_prefix)
                     if require_boundary_reduction and len(duplicate_boundary_after) >= len(duplicate_boundary_before):
@@ -668,7 +697,7 @@ def edit_mesh_boundary(
                 finally:
                     if cmds.objExists(duplicate):
                         cmds.delete(duplicate)
-            cap_reports = _cap_groups_for_shape(shape_name, prefix_name, groups, boundary_data, cap_settings)
+            cap_reports = _cap_groups_for_shape(object_name, shape_name, prefix_name, groups, boundary_data, cap_settings)
         return _result(
             nodes,
             resolved,
