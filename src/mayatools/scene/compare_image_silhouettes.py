@@ -15,6 +15,8 @@ def compare_image_silhouettes(
     reference_background_color: List[float] = None,
     candidate_background_color: List[float] = None,
     background_tolerance: float = 0.08,
+    reference_background_tolerance: float = None,
+    candidate_background_tolerance: float = None,
     alpha_threshold: float = 0.05,
     luminance_threshold: float = 0.5,
     invert_luminance: bool = False,
@@ -58,10 +60,12 @@ def compare_image_silhouettes(
     Optional foreground auto-cropping is useful when renders are centered on a
     larger preview canvas. reference_background_color and
     candidate_background_color can be used when the compared images use
-    different studio backgrounds. band_edges, correction_profile_samples, and
-    scale_range are convenience aliases for the normalized band/profile
-    arguments. Set summary_only or disable sample blocks when running frequent
-    QA passes where the aggregate metrics are enough.
+    different studio backgrounds. reference_background_tolerance and
+    candidate_background_tolerance can override background_tolerance when one
+    image needs a looser or tighter foreground cut. band_edges,
+    correction_profile_samples, and scale_range are convenience aliases for
+    the normalized band/profile arguments. Set summary_only or disable sample
+    blocks when running frequent QA passes where aggregate metrics are enough.
     """
     import math
     import os
@@ -159,7 +163,7 @@ def compare_image_silhouettes(
                     foreground_bbox[3] = max(foreground_bbox[3], row)
         return count, foreground_bbox
 
-    def _is_foreground_pixel(red, green, blue, alpha, color):
+    def _is_foreground_pixel(red, green, blue, alpha, color, tolerance):
         if alpha < alpha_threshold:
             return False
         if mask_mode == "alpha":
@@ -167,9 +171,9 @@ def compare_image_silhouettes(
         if mask_mode == "luminance":
             luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
             return luminance < luminance_threshold if invert_luminance else luminance >= luminance_threshold
-        return _color_distance([red, green, blue], color) > background_tolerance
+        return _color_distance([red, green, blue], color) > tolerance
 
-    def _auto_crop_bbox(image, search_bbox, color, padding_pixels, arg_prefix):
+    def _auto_crop_bbox(image, search_bbox, color, tolerance, padding_pixels, arg_prefix):
         x0, y0, x1, y1 = search_bbox
         width = image.width()
         height = image.height()
@@ -181,7 +185,7 @@ def compare_image_silhouettes(
         for y in range(y0, y1 + 1):
             for x in range(x0, x1 + 1):
                 red, green, blue, alpha = _pixel_rgb_alpha(image, x, y)
-                if not _is_foreground_pixel(red, green, blue, alpha, color):
+                if not _is_foreground_pixel(red, green, blue, alpha, color, tolerance):
                     continue
                 min_x = min(min_x, x)
                 min_y = min(min_y, y)
@@ -261,7 +265,7 @@ def compare_image_silhouettes(
             raise ValueError(f"Resolved {arg_prefix} crop bbox is empty.")
         return [x0, y0, x1, y1]
 
-    def _mask_from_image(image, bbox, color):
+    def _mask_from_image(image, bbox, color, tolerance):
         x0, y0, x1, y1 = bbox
         width = x1 - x0 + 1
         height = y1 - y0 + 1
@@ -271,7 +275,7 @@ def compare_image_silhouettes(
             for column in range(width):
                 source_x = x0 + column
                 red, green, blue, alpha = _pixel_rgb_alpha(image, source_x, source_y)
-                if not _is_foreground_pixel(red, green, blue, alpha, color):
+                if not _is_foreground_pixel(red, green, blue, alpha, color, tolerance):
                     continue
                 mask[row][column] = 1
         if fill_holes:
@@ -583,11 +587,25 @@ def compare_image_silhouettes(
         raise ValueError("mask_mode must be one of foreground, alpha, or luminance.")
     if not isinstance(fill_holes, bool):
         raise ValueError("fill_holes must be a boolean.")
-    background_tolerance = _validate_scalar(background_tolerance, "background_tolerance")
-    if background_tolerance > 1.0:
-        background_tolerance /= 255.0
-    if background_tolerance < 0.0:
-        raise ValueError("background_tolerance must be greater than or equal to zero.")
+    def _validate_tolerance(value, arg_name):
+        tolerance = _validate_scalar(value, arg_name)
+        if tolerance > 1.0:
+            tolerance /= 255.0
+        if tolerance < 0.0:
+            raise ValueError(f"{arg_name} must be greater than or equal to zero.")
+        return tolerance
+
+    background_tolerance = _validate_tolerance(background_tolerance, "background_tolerance")
+    reference_background_tolerance = (
+        _validate_tolerance(reference_background_tolerance, "reference_background_tolerance")
+        if reference_background_tolerance is not None
+        else background_tolerance
+    )
+    candidate_background_tolerance = (
+        _validate_tolerance(candidate_background_tolerance, "candidate_background_tolerance")
+        if candidate_background_tolerance is not None
+        else background_tolerance
+    )
     alpha_threshold = _clamp(_validate_scalar(alpha_threshold, "alpha_threshold"))
     luminance_threshold = _clamp(_validate_scalar(luminance_threshold, "luminance_threshold"))
     compare_width = _validate_int(compare_width, "compare_width", 8)
@@ -697,6 +715,7 @@ def compare_image_silhouettes(
             reference_image,
             reference_search_bbox,
             reference_background,
+            reference_background_tolerance,
             auto_crop_padding_pixels,
             "reference_image_path",
         )
@@ -707,14 +726,25 @@ def compare_image_silhouettes(
             candidate_image,
             candidate_search_bbox,
             candidate_background,
+            candidate_background_tolerance,
             auto_crop_padding_pixels,
             "candidate_image_path",
         )
     else:
         candidate_bbox = candidate_search_bbox
 
-    reference_data = _mask_from_image(reference_image, reference_bbox, reference_background)
-    candidate_data = _mask_from_image(candidate_image, candidate_bbox, candidate_background)
+    reference_data = _mask_from_image(
+        reference_image,
+        reference_bbox,
+        reference_background,
+        reference_background_tolerance,
+    )
+    candidate_data = _mask_from_image(
+        candidate_image,
+        candidate_bbox,
+        candidate_background,
+        candidate_background_tolerance,
+    )
     reference_mask, reference_count, reference_centroid, reference_canvas_bbox = _resample_mask(reference_data)
     candidate_mask, candidate_count, candidate_centroid, candidate_canvas_bbox = _resample_mask(candidate_data)
 
@@ -797,6 +827,9 @@ def compare_image_silhouettes(
         "candidate_foreground_pixels": candidate_data["foreground_pixels"],
         "reference_background_color": reference_background,
         "candidate_background_color": candidate_background,
+        "background_tolerance": background_tolerance,
+        "reference_background_tolerance": reference_background_tolerance,
+        "candidate_background_tolerance": candidate_background_tolerance,
         "reference_aspect": ref_aspect,
         "candidate_aspect": cand_aspect,
         "aspect_error": cand_aspect - ref_aspect,
