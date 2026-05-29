@@ -22,8 +22,10 @@ def playblast_object_silhouette(
     assigns the proxies a flat high-contrast material, isolates them in a model
     panel, hides non-mesh viewport categories such as cameras and locators, and
     writes a single-frame playblast. It then removes all temporary proxy nodes.
-    This gives repeatable silhouette QA without modifying the user's real
-    materials, face assignments, selection, or scene geometry.
+    It returns the camera framing data needed by downstream QA tools to map
+    silhouette errors back to components using the same projection. This gives
+    repeatable silhouette QA without modifying the user's real materials, face
+    assignments, selection, or scene geometry.
     """
     import math
     import os
@@ -426,6 +428,7 @@ def playblast_object_silhouette(
         "silhouette_color": clean_silhouette_color,
         "background_color": clean_background_color,
         "bounding_box": target_bbox,
+        "camera_center": target_center,
         "camera_position": camera_position,
         "orthographic_width": resolved_orthographic_width,
         "image_width": clean_image_width,
