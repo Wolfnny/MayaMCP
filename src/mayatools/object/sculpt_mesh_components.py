@@ -13,6 +13,7 @@ def sculpt_mesh_components(
     preserve_boundary: bool = True,
     space: str = "world",
     use_selection: bool = True,
+    select_result: bool = True,
     max_preview: int = 20,
 ) -> Dict[str, object]:
     """Locally smooth, relax, or inflate polygon mesh components.
@@ -27,6 +28,8 @@ def sculpt_mesh_components(
     Edges and faces are converted to vertices. This supports Maya-style local
     cleanup of uneven point spacing, soft sculpt-like surface relaxation, and
     small inflate/deflate adjustments without global procedural deformation.
+    Set select_result=False for scripted sculpt passes where the next operation
+    should not inherit the edited vertex selection.
     """
     import math
     import re
@@ -264,7 +267,8 @@ def sculpt_mesh_components(
     moved_count = sum(1 for movement in movements if movement > 1e-9)
     if moved_count == 0:
         raise RuntimeError(f"{operation} did not move any vertices.")
-    cmds.select([f"{prefix_name}.vtx[{vertex_id}]" for vertex_id in vertex_ids], replace=True)
+    if select_result:
+        cmds.select([f"{prefix_name}.vtx[{vertex_id}]" for vertex_id in vertex_ids], replace=True)
 
     return {
         "success": True,
@@ -277,6 +281,7 @@ def sculpt_mesh_components(
         "strength": clean_strength,
         "distance": clean_distance,
         "preserve_boundary": bool(preserve_boundary),
+        "select_result": bool(select_result),
         "resolved_vertex_count": len(vertex_ids),
         "moved_vertex_count": moved_count,
         "skipped_count": len(skipped),
