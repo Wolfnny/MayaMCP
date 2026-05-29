@@ -345,11 +345,57 @@ def compare_image_silhouettes(
             ]
         return result, count, centroid, canvas_bbox or [0, 0, 0, 0]
 
-    def _row_width(mask, row):
+    def _row_extents(mask, row):
         xs = [index for index, value in enumerate(mask[row]) if value]
         if not xs:
-            return 0.0
-        return (max(xs) - min(xs) + 1) / float(compare_width)
+            return {
+                "width": 0.0,
+                "left_pixel": None,
+                "right_pixel": None,
+                "center_pixel": None,
+                "left_normalized": None,
+                "right_normalized": None,
+                "center_normalized": None,
+            }
+        left = min(xs)
+        right = max(xs)
+        center = (left + right) * 0.5
+        normalize_denominator = float(max(1, compare_width - 1))
+        return {
+            "width": (right - left + 1) / float(compare_width),
+            "left_pixel": left,
+            "right_pixel": right,
+            "center_pixel": center,
+            "left_normalized": left / normalize_denominator,
+            "right_normalized": right / normalize_denominator,
+            "center_normalized": center / normalize_denominator,
+        }
+
+    def _row_width(mask, row):
+        return _row_extents(mask, row)["width"]
+
+    def _row_alignment_fields(reference_extents, candidate_extents):
+        fields = {}
+        for prefix, extents in [("reference", reference_extents), ("candidate", candidate_extents)]:
+            for key in ["left_pixel", "right_pixel", "center_pixel", "left_normalized", "right_normalized", "center_normalized"]:
+                fields[f"{prefix}_{key}"] = extents[key]
+        if reference_extents["center_pixel"] is not None and candidate_extents["center_pixel"] is not None:
+            fields["center_error_pixels"] = candidate_extents["center_pixel"] - reference_extents["center_pixel"]
+            fields["center_error_normalized"] = candidate_extents["center_normalized"] - reference_extents["center_normalized"]
+        else:
+            fields["center_error_pixels"] = None
+            fields["center_error_normalized"] = None
+        if reference_extents["left_pixel"] is not None and candidate_extents["left_pixel"] is not None:
+            fields["left_error_pixels"] = candidate_extents["left_pixel"] - reference_extents["left_pixel"]
+            fields["right_error_pixels"] = candidate_extents["right_pixel"] - reference_extents["right_pixel"]
+            fields["left_error_normalized"] = candidate_extents["left_normalized"] - reference_extents["left_normalized"]
+            fields["right_error_normalized"] = candidate_extents["right_normalized"] - reference_extents["right_normalized"]
+        else:
+            fields["left_error_pixels"] = None
+            fields["right_error_pixels"] = None
+            fields["left_error_normalized"] = None
+            fields["right_error_normalized"] = None
+        return fields
 
     def _row_width_errors(reference_mask, candidate_mask):
         errors = []
@@ -357,8 +403,10 @@ def compare_image_silhouettes(
         samples = []
         for index in range(row_sample_count):
             row = int(round(index * (compare_height - 1) / float(max(1, row_sample_count - 1))))
-            reference_width = _row_width(reference_mask, row)
-            candidate_width = _row_width(candidate_mask, row)
+            reference_extents = _row_extents(reference_mask, row)
+            candidate_extents = _row_extents(candidate_mask, row)
+            reference_width = reference_extents["width"]
+            candidate_width = candidate_extents["width"]
             signed = candidate_width - reference_width
             errors.append(abs(signed))
             signed_errors.append(signed)
@@ -368,6 +416,7 @@ def compare_image_silhouettes(
                 "candidate_width": candidate_width,
                 "signed_error": signed,
                 "abs_error": abs(signed),
+                **_row_alignment_fields(reference_extents, candidate_extents),
             })
         return {
             "mean_abs_width_error": sum(errors) / float(len(errors)) if errors else 0.0,

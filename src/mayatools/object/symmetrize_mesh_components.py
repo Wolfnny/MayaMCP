@@ -12,6 +12,7 @@ def symmetrize_mesh_components(
     center_mode: str = "origin",
     direction: str = "average",
     tolerance: float = 0.001,
+    unique_pairs: bool = True,
     snap_center_vertices: bool = True,
     space: str = "object",
     use_selection: bool = True,
@@ -33,7 +34,9 @@ def symmetrize_mesh_components(
 
     Edges, faces, UVs, and vertex-faces are converted to vertices. This supports
     Maya-style local symmetry cleanup after hand-moving components, without
-    rebuilding a procedural or object-wide shape.
+    rebuilding a procedural or object-wide shape. By default each vertex can be
+    used in at most one mirror pair, avoiding accidental many-to-one collapses
+    when several edited vertices fall within the same tolerance region.
     """
     import math
     import re
@@ -52,6 +55,11 @@ def symmetrize_mesh_components(
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f"{arg_name} must be an integer greater than or equal to {minimum}.")
         return int(value)
+
+    def _validate_bool(value, arg_name):
+        if not isinstance(value, bool):
+            raise ValueError(f"{arg_name} must be a boolean.")
+        return value
 
     def _validate_vector(values, length, arg_name):
         if not isinstance(values, list) or len(values) != length or not all(_is_number(item) for item in values):
@@ -213,10 +221,20 @@ def symmetrize_mesh_components(
         skipped = []
         center_vertices = []
         seen_pairs = set()
+        used_vertices = set()
         tolerance_sq = clean_tolerance * clean_tolerance
         all_ids = list(range(mesh_fn.numVertices))
 
         for vertex_id in selected_ids:
+            if clean_unique_pairs and vertex_id in used_vertices:
+                skipped.append(
+                    {
+                        "index": vertex_id,
+                        "component": f"{prefix_name}.vtx[{vertex_id}]",
+                        "reason": "already_used_in_unique_pair",
+                    }
+                )
+                continue
             current_side = _side(vertex_id, current_points, center_value, axis_idx, clean_tolerance)
             if current_side == "center":
                 center_vertices.append(vertex_id)
@@ -227,6 +245,8 @@ def symmetrize_mesh_components(
             best_distance_sq = tolerance_sq
             for candidate_id in all_ids:
                 if candidate_id == vertex_id:
+                    continue
+                if clean_unique_pairs and candidate_id in used_vertices:
                     continue
                 candidate = current_points[candidate_id]
                 distance_sq = (
@@ -252,6 +272,8 @@ def symmetrize_mesh_components(
             if pair in seen_pairs:
                 continue
             seen_pairs.add(pair)
+            if clean_unique_pairs:
+                used_vertices.update(pair)
             positive_id, negative_id = _positive_negative(pair, current_points, center_value, axis_idx)
             pairs.append(
                 {
@@ -351,6 +373,7 @@ def symmetrize_mesh_components(
     clean_tolerance = _validate_scalar(tolerance, "tolerance")
     if clean_tolerance <= 0.0:
         raise ValueError("tolerance must be greater than 0.")
+    clean_unique_pairs = _validate_bool(unique_pairs, "unique_pairs")
     space = space.lower().strip()
     if space not in {"world", "object"}:
         raise ValueError("space must be world or object.")
@@ -424,6 +447,7 @@ def symmetrize_mesh_components(
         "center_mode": center_mode.lower().strip() if center is None else "explicit",
         "direction": clean_direction,
         "tolerance": clean_tolerance,
+        "unique_pairs": clean_unique_pairs,
         "resolved_vertex_count": len(vertex_ids),
         "pair_count": len(pairs),
         "center_vertex_count": len(center_vertices),
