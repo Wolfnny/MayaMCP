@@ -32,6 +32,11 @@ def select_mesh_by_region(
     - radial_range and angle_range_degrees around radial_axis and center
     - normal plus normal_angle_degrees for face normals or vertex normals
 
+    Angular filtering uses atan2(delta_on_first_radial_axis, delta_on_second_radial_axis).
+    For the default radial_axis="y", 0 degrees points toward +Z, 90 toward +X,
+    180 toward -Z, and 270 toward -X. The returned angle_convention field
+    reports this basis explicitly for any radial_axis.
+
     This is a Maya-style component selection constraint for reliably targeting
     local bands, panels, caps, front/back regions, and normal-facing areas before
     transform, material, UV, or topology edits.
@@ -85,6 +90,26 @@ def select_mesh_by_region(
     def _angle_in_range(angle, start_degrees, span_degrees):
         delta = (angle - start_degrees) % 360.0
         return delta <= span_degrees + 1.0e-8
+
+    def _axis_name(index):
+        return ["x", "y", "z"][index]
+
+    def _signed_axis_name(index, sign=1):
+        prefix = "+" if sign >= 0 else "-"
+        return f"{prefix}{_axis_name(index).upper()}"
+
+    def _angle_convention(radial_axis_index, first_radial_index, second_radial_index):
+        return {
+            "radial_axis": _axis_name(radial_axis_index),
+            "formula": "degrees(atan2(delta_first_radial_axis, delta_second_radial_axis))",
+            "first_radial_axis": _axis_name(first_radial_index),
+            "second_radial_axis": _axis_name(second_radial_index),
+            "zero_degrees_direction": _signed_axis_name(second_radial_index, 1),
+            "ninety_degrees_direction": _signed_axis_name(first_radial_index, 1),
+            "one_eighty_degrees_direction": _signed_axis_name(second_radial_index, -1),
+            "two_seventy_degrees_direction": _signed_axis_name(first_radial_index, -1),
+            "positive_direction": f"from {_signed_axis_name(second_radial_index, 1)} toward {_signed_axis_name(first_radial_index, 1)}",
+        }
 
     def _mesh_shape(node):
         if not cmds.objExists(node):
@@ -390,6 +415,7 @@ def select_mesh_by_region(
             "radial_axis": radial_axis.lower().strip(),
             "radial_range": clean_radial_range,
             "angle_range_degrees": clean_angle_range,
+            "angle_convention": _angle_convention(radial_axis_idx, radial_a, radial_b),
             "normal": clean_normal,
             "normal_angle_degrees": clean_normal_angle if clean_normal is not None else None,
         },
