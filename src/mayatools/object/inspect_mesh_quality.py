@@ -204,6 +204,7 @@ def inspect_mesh_quality(
                     "component": edge_component,
                     "vertices": [vertex_a, vertex_b],
                     "connected_faces": [int(face) for face in faces],
+                    "connected_face_count": len(faces),
                 })
                 for vertex_id in [vertex_a, vertex_b]:
                     vertex_to_edges.setdefault(vertex_id, []).append(edge_id)
@@ -222,6 +223,21 @@ def inspect_mesh_quality(
     boundary_edge_components, boundary_edge_records, boundary_vertex_components, boundary_vertex_records = _boundary_components()
     boundary_edge_set = set(boundary_edge_components)
     boundary_vertex_set = set(boundary_vertex_components)
+    open_boundary_edge_set = {
+        record["component"]
+        for record in boundary_edge_records
+        if record.get("connected_face_count", len(record.get("connected_faces", []))) < 2
+    }
+    open_boundary_vertex_ids = set()
+    non_open_boundary_vertex_ids = set()
+    for record in boundary_edge_records:
+        target = open_boundary_vertex_ids if record.get("connected_face_count", len(record.get("connected_faces", []))) < 2 else non_open_boundary_vertex_ids
+        target.update(record["vertices"])
+    open_boundary_vertex_set = {
+        _component(prefix_name, "vtx", vertex_id)
+        for vertex_id in open_boundary_vertex_ids
+        if vertex_id not in non_open_boundary_vertex_ids
+    }
 
     if "border_edges" in clean_issue_types:
         issues["border_edges"] = _issue_record(boundary_edge_components, boundary_edge_records)
@@ -255,9 +271,9 @@ def inspect_mesh_quality(
             raw_components = _poly_info_components(poly_info_type)
             components = raw_components
             if not include_boundary_as_nonmanifold and poly_info_type == "nonmanifold_edges":
-                components = [component for component in raw_components if component not in boundary_edge_set]
+                components = [component for component in raw_components if component not in open_boundary_edge_set]
             if not include_boundary_as_nonmanifold and poly_info_type == "nonmanifold_vertices":
-                components = [component for component in raw_components if component not in boundary_vertex_set]
+                components = [component for component in raw_components if component not in open_boundary_vertex_set]
             raw_for_record = raw_components if components != raw_components else None
             issues[poly_info_type] = _issue_record(components, raw_components=raw_for_record)
 

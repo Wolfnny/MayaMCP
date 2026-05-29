@@ -19,8 +19,8 @@ def inspect_mesh_boundaries(
     Reports connected border-edge groups with edge/vertex counts, whether the
     group is a closed loop or open chain, world-space center, bounding box,
     perimeter, ordered component previews, edge-length statistics, simple loop
-    topology, duplicate position diagnostics, planarity diagnostics, and
-    projected self-intersection diagnostics.
+    topology, connected-face counts, duplicate position diagnostics, planarity
+    diagnostics, and projected self-intersection diagnostics.
     Components can be supplied as seed vertices/edges/faces to return only
     boundary loops touching those seeds. This is useful before fill-hole,
     bridge, sew, cap, delete-edge, or weld work so an artist can decide which
@@ -491,6 +491,19 @@ def inspect_mesh_boundaries(
         degree_histogram = {}
         for degree in degrees.values():
             degree_histogram[str(degree)] = degree_histogram.get(str(degree), 0) + 1
+        connected_face_count_histogram = {}
+        zero_face_edges = []
+        one_face_edges = []
+        multi_face_edges = []
+        for group_edge in group:
+            face_count = len(boundary_edges[group_edge]["faces"])
+            connected_face_count_histogram[str(face_count)] = connected_face_count_histogram.get(str(face_count), 0) + 1
+            if face_count == 0:
+                zero_face_edges.append(group_edge)
+            elif face_count == 1:
+                one_face_edges.append(group_edge)
+            else:
+                multi_face_edges.append(group_edge)
         branch_vertices = [vertex_id for vertex_id, degree in degrees.items() if degree > 2]
         endpoint_vertices = [vertex_id for vertex_id, degree in degrees.items() if degree == 1]
         duplicate_positions = _duplicate_positions(vertex_ids, clean_position_tolerance, clean_max_components_per_loop)
@@ -516,6 +529,16 @@ def inspect_mesh_boundaries(
             "smallest_span_axis": ["x", "y", "z"][axis_span.index(min(axis_span))] if axis_span else None,
             "edge_length_stats": _length_stats(edge_lengths),
             "degree_histogram": degree_histogram,
+            "connected_face_count_histogram": connected_face_count_histogram,
+            "zero_face_edge_count": len(zero_face_edges),
+            "zero_face_edges": [_component("e", edge_id) for edge_id in zero_face_edges[:clean_max_components_per_loop]],
+            "zero_face_edges_truncated": len(zero_face_edges) > clean_max_components_per_loop,
+            "one_face_edge_count": len(one_face_edges),
+            "one_face_edges": [_component("e", edge_id) for edge_id in one_face_edges[:clean_max_components_per_loop]],
+            "one_face_edges_truncated": len(one_face_edges) > clean_max_components_per_loop,
+            "multi_face_edge_count": len(multi_face_edges),
+            "multi_face_edges": [_component("e", edge_id) for edge_id in multi_face_edges[:clean_max_components_per_loop]],
+            "multi_face_edges_truncated": len(multi_face_edges) > clean_max_components_per_loop,
             "endpoint_vertex_count": len(endpoint_vertices),
             "branch_vertex_count": len(branch_vertices),
             "branch_vertices": [_component("vtx", vertex_id) for vertex_id in sorted(branch_vertices)[:clean_max_components_per_loop]],

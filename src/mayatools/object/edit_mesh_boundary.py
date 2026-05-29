@@ -20,15 +20,21 @@ def edit_mesh_boundary(
       no components are provided
     - cap_boundary_loops: create ngon or triangle-fan cap polygons for selected
       closed border loops using mesh vertex order. Ngons default to a Maya
-      polyAppendVertex path that reuses existing boundary vertices.
+      polyAppendVertex path that reuses existing boundary vertices. Triangle
+      fans default to appending triangles from boundary edges to a shared
+      merged center point.
     - planarize_boundary_loops: flatten selected border loop vertices to an
       axis plane or best-fit loop plane before capping, sewing, or welding
+    - regularize_boundary_loops: move closed border loop vertices into
+      topology-order angular spacing around the loop center to untangle
+      self-intersections or make openings rounder before capping
 
     This is a Maya-style component repair tool for local mesh work: make an
     opening, clean boundary vertex positions, remove support edges, then close
     border loops while reporting before/after topology counts, border edge
     changes, and vertex movement.
     """
+    import math
     import re
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
@@ -273,6 +279,36 @@ def edit_mesh_boundary(
             return None
         return [float(normal[0] / length), float(normal[1] / length), float(normal[2] / length)]
 
+    def _axis_vector(axis_index):
+        values = [0.0, 0.0, 0.0]
+        values[axis_index] = 1.0
+        return om.MVector(values[0], values[1], values[2])
+
+    def _plane_basis_from_axis(axis_index):
+        keep_axes = [index for index in range(3) if index != axis_index]
+        return _axis_vector(keep_axes[0]), _axis_vector(keep_axes[1]), _axis_vector(axis_index)
+
+    def _plane_basis_from_normal(normal, loop_points, center):
+        normal_vector = om.MVector(normal[0], normal[1], normal[2])
+        if normal_vector.length() <= 1.0e-12:
+            raise ValueError("Cannot build a plane basis from a zero normal.")
+        normal_vector.normalize()
+        basis_u = None
+        for point in loop_points:
+            candidate = om.MVector(point - center)
+            candidate = candidate - normal_vector * (candidate * normal_vector)
+            if candidate.length() > 1.0e-9:
+                candidate.normalize()
+                basis_u = candidate
+                break
+        if basis_u is None:
+            raise ValueError("Cannot build a stable plane basis from coincident loop vertices.")
+        basis_v = normal_vector ^ basis_u
+        if basis_v.length() <= 1.0e-12:
+            raise ValueError("Cannot build a stable perpendicular plane basis.")
+        basis_v.normalize()
+        return basis_u, basis_v, normal_vector
+
     def _average_point(vertex_ids, mesh_points):
         center = om.MPoint()
         for vertex_id in vertex_ids:
@@ -292,6 +328,40 @@ def edit_mesh_boundary(
                 raise ValueError("parameters.plane_position is required when parameters.position_mode is value.")
             return float(plane_position)
         raise ValueError("parameters.position_mode must be mean, min, max, or value.")
+
+    def _loop_plane(ordered_vertices, mesh_points, plane_mode, axis_name, axis_index, position_mode, plane_position):
+        if plane_mode == "axis":
+            target_value = _axis_plane_value(ordered_vertices, mesh_points, axis_index, position_mode, plane_position)
+            center = _average_point(ordered_vertices, mesh_points)
+            center[axis_index] = target_value
+            basis_u, basis_v, normal_vector = _plane_basis_from_axis(axis_index)
+            return {
+                "center": center,
+                "basis_u": basis_u,
+                "basis_v": basis_v,
+                "normal": [float(normal_vector.x), float(normal_vector.y), float(normal_vector.z)],
+                "axis": axis_name,
+                "plane_position": target_value,
+            }
+
+        loop_points = [mesh_points[vertex_id] for vertex_id in ordered_vertices]
+        normal = _newell_normal(loop_points)
+        if normal is None:
+            raise ValueError("Could not compute a stable best-fit plane for boundary loop.")
+        center = _average_point(ordered_vertices, mesh_points)
+        basis_u, basis_v, normal_vector = _plane_basis_from_normal(normal, loop_points, center)
+        return {
+            "center": center,
+            "basis_u": basis_u,
+            "basis_v": basis_v,
+            "normal": [float(normal_vector.x), float(normal_vector.y), float(normal_vector.z)],
+            "axis": None,
+            "plane_position": None,
+        }
+
+    def _project_to_plane(point, center, basis_u, basis_v):
+        vector = om.MVector(point - center)
+        return float(vector * basis_u), float(vector * basis_v)
 
     def _planarize_groups(groups, boundary_data, settings):
         plane_mode = settings["plane_mode"]
@@ -388,6 +458,125 @@ def edit_mesh_boundary(
             pass
         return moved_vertices, moved_records, loop_reports
 
+    def _radius_for_mode(radii, index, radius_mode, radius_value, min_radius):
+        if radius_mode == "preserve":
+            return max(float(radii[index]), min_radius)
+        if radius_mode == "mean":
+            return max(float(sum(radii) / len(radii)), min_radius)
+        if radius_mode == "min":
+            return max(float(min(radii)), min_radius)
+        if radius_mode == "max":
+            return max(float(max(radii)), min_radius)
+        if radius_mode == "value":
+            if radius_value is None:
+                raise ValueError("parameters.radius_value is required when parameters.radius_mode is value.")
+            return max(float(radius_value), min_radius)
+        raise ValueError("parameters.radius_mode must be preserve, mean, min, max, or value.")
+
+    def _regularize_groups(groups, boundary_data, settings):
+        plane_mode = settings["plane_mode"]
+        axis_name = settings["axis_name"]
+        axis_index = settings["axis_index"]
+        position_mode = settings["position_mode"]
+        plane_position = settings["plane_position"]
+        strength = settings["strength"]
+        move_tolerance = settings["move_tolerance"]
+        radius_mode = settings["radius_mode"]
+        radius_value = settings["radius_value"]
+        min_radius = settings["min_radius"]
+        angle_offset = settings["angle_offset"]
+        reverse_winding = settings["reverse_winding"]
+        mesh_fn = om.MFnMesh(_mesh_dag(shape_name))
+        mesh_points = mesh_fn.getPoints(om.MSpace.kWorld)
+        moved_records = []
+        loop_reports = []
+        moved_vertices = set()
+
+        for group in groups:
+            ordered_vertices, closed = _ordered_loop_vertices(
+                group,
+                boundary_data,
+                allow_open_chains=False,
+                operation_name="regularize_boundary_loops",
+            )
+            if not closed or len(ordered_vertices) < 3:
+                raise ValueError("regularize_boundary_loops requires closed loops with at least three vertices.")
+            plane = _loop_plane(ordered_vertices, mesh_points, plane_mode, axis_name, axis_index, position_mode, plane_position)
+            center = plane["center"]
+            basis_u = plane["basis_u"]
+            basis_v = plane["basis_v"]
+            coords = [_project_to_plane(mesh_points[vertex_id], center, basis_u, basis_v) for vertex_id in ordered_vertices]
+            radii = [(u ** 2 + v ** 2) ** 0.5 for u, v in coords]
+            if max(radii) <= 1.0e-12:
+                raise ValueError("regularize_boundary_loops cannot regularize a loop with zero projected radius.")
+            signed_area = 0.0
+            for index, coord in enumerate(coords):
+                next_coord = coords[(index + 1) % len(coords)]
+                signed_area += coord[0] * next_coord[1] - next_coord[0] * coord[1]
+            winding = 1.0 if signed_area >= 0.0 else -1.0
+            if reverse_winding:
+                winding *= -1.0
+            start_angle = math.atan2(coords[0][1], coords[0][0]) + angle_offset
+            angle_step = winding * (2.0 * math.pi / float(len(ordered_vertices)))
+
+            loop_moved = []
+            max_displacement = 0.0
+            target_radii = []
+            for index, vertex_id in enumerate(ordered_vertices):
+                radius = _radius_for_mode(radii, index, radius_mode, radius_value, min_radius)
+                target_radii.append(radius)
+                angle = start_angle + angle_step * index
+                planar_offset = basis_u * (math.cos(angle) * radius) + basis_v * (math.sin(angle) * radius)
+                raw_target = center + planar_offset
+                before_point = om.MPoint(mesh_points[vertex_id])
+                target_point = om.MPoint(
+                    before_point.x + (raw_target.x - before_point.x) * strength,
+                    before_point.y + (raw_target.y - before_point.y) * strength,
+                    before_point.z + (raw_target.z - before_point.z) * strength,
+                )
+                displacement = _distance(before_point, target_point)
+                max_displacement = max(max_displacement, displacement)
+                if displacement <= move_tolerance:
+                    continue
+                mesh_points[vertex_id] = target_point
+                moved_vertices.add(vertex_id)
+                if len(moved_records) < max_preview:
+                    moved_records.append({
+                        "vertex": _component("vtx", vertex_id),
+                        "before": _point_to_list(before_point),
+                        "after": _point_to_list(target_point),
+                        "displacement": displacement,
+                    })
+                loop_moved.append(vertex_id)
+
+            loop_reports.append({
+                "edge_count": len(group),
+                "ordered_vertex_count": len(ordered_vertices),
+                "closed": True,
+                "moved_vertex_count": len(loop_moved),
+                "max_displacement": max_displacement,
+                "plane_mode": plane_mode,
+                "axis": plane["axis"],
+                "position_mode": position_mode if plane_mode == "axis" else None,
+                "plane_position": plane["plane_position"],
+                "plane_normal": plane["normal"],
+                "radius_mode": radius_mode,
+                "radius_min_before": float(min(radii)),
+                "radius_max_before": float(max(radii)),
+                "radius_min_after": float(min(target_radii)),
+                "radius_max_after": float(max(target_radii)),
+                "angle_step_degrees": float(math.degrees(angle_step)),
+            })
+
+        if not moved_vertices:
+            raise RuntimeError("regularize_boundary_loops did not move any boundary vertices.")
+        mesh_fn.setPoints(mesh_points, om.MSpace.kWorld)
+        try:
+            mesh_fn.updateSurface()
+        except Exception:
+            pass
+        return moved_vertices, moved_records, loop_reports
+
     def _poly_info_components_for(target_object, flag_name):
         flag_map = {
             "nonmanifold_edges": {"nonManifoldEdges": True},
@@ -420,6 +609,7 @@ def edit_mesh_boundary(
         reverse_winding = cap_settings["reverse_winding"]
         construction_history = cap_settings["construction_history"]
         texture = cap_settings["texture"]
+        center_merge_distance = cap_settings["center_merge_distance"]
         mesh_fn = om.MFnMesh(_mesh_dag(target_shape))
         mesh_points = mesh_fn.getPoints(om.MSpace.kObject)
         reports = []
@@ -438,7 +628,7 @@ def edit_mesh_boundary(
             nodes = []
             effective_cap_method = cap_method
             if effective_cap_method == "auto":
-                effective_cap_method = "poly_append_vertex" if cap_mode == "ngon" else "api_points"
+                effective_cap_method = "poly_append_vertex" if cap_mode == "ngon" else "poly_append_edge_fan"
             if effective_cap_method == "poly_append_vertex":
                 if cap_mode != "ngon":
                     raise ValueError("parameters.cap_method poly_append_vertex currently supports cap_mode ngon only.")
@@ -451,6 +641,40 @@ def edit_mesh_boundary(
                 ) or [])
                 face_count_after = int(cmds.polyEvaluate(target_object, face=True))
                 added_faces.extend(range(face_count_before, face_count_after))
+            elif effective_cap_method == "poly_append_edge_fan":
+                if cap_mode != "triangle_fan":
+                    raise ValueError("parameters.cap_method poly_append_edge_fan currently supports cap_mode triangle_fan only.")
+                center_point = om.MPoint()
+                for vertex_id in ordered_vertices:
+                    center_point += mesh_points[vertex_id]
+                center_point = center_point / float(len(ordered_vertices))
+                face_count_before = int(cmds.polyEvaluate(target_object, face=True))
+                vertex_count_before = int(cmds.polyEvaluate(target_object, vertex=True))
+                cmds.select(target_object, replace=True)
+                for edge_id in group:
+                    nodes.extend(cmds.polyAppend(
+                        append=[edge_id, (float(center_point.x), float(center_point.y), float(center_point.z))],
+                        constructionHistory=construction_history,
+                        texture=texture,
+                    ) or [])
+                face_count_after = int(cmds.polyEvaluate(target_object, face=True))
+                vertex_count_after = int(cmds.polyEvaluate(target_object, vertex=True))
+                added_faces.extend(range(face_count_before, face_count_after))
+                if vertex_count_after > vertex_count_before:
+                    refreshed_mesh = om.MFnMesh(_mesh_dag(target_shape))
+                    refreshed_points = refreshed_mesh.getPoints(om.MSpace.kObject)
+                    center_vertices = []
+                    for vertex_id in range(vertex_count_before, vertex_count_after):
+                        point = refreshed_points[vertex_id]
+                        if _distance(point, center_point) <= max(center_merge_distance, 1.0e-12):
+                            center_vertices.append(_prefixed_component(component_prefix, "vtx", vertex_id))
+                    if len(center_vertices) > 1:
+                        nodes.extend(cmds.polyMergeVertex(
+                            center_vertices,
+                            distance=max(center_merge_distance, 1.0e-12),
+                            alwaysMergeTwoVertices=False,
+                            constructionHistory=construction_history,
+                        ) or [])
             elif cap_mode == "ngon":
                 polygon_points = om.MPointArray([mesh_points[vertex_id] for vertex_id in ordered_vertices])
                 added_faces.append(int(mesh_fn.addPolygon(polygon_points, True, point_tolerance)))
@@ -538,7 +762,14 @@ def edit_mesh_boundary(
     if not operation:
         raise ValueError("operation is required.")
     operation = operation.lower().strip()
-    allowed = {"delete_faces", "delete_edges", "fill_holes", "cap_boundary_loops", "planarize_boundary_loops"}
+    allowed = {
+        "delete_faces",
+        "delete_edges",
+        "fill_holes",
+        "cap_boundary_loops",
+        "planarize_boundary_loops",
+        "regularize_boundary_loops",
+    }
     if operation not in allowed:
         raise ValueError(f"operation must be one of: {', '.join(sorted(allowed))}.")
 
@@ -569,7 +800,7 @@ def edit_mesh_boundary(
         )
         return _result(node, edges, before_counts, before_border, {"clean_vertices": clean_vertices})
 
-    if operation in {"fill_holes", "cap_boundary_loops", "planarize_boundary_loops"}:
+    if operation in {"fill_holes", "cap_boundary_loops", "planarize_boundary_loops", "regularize_boundary_loops"}:
         resolved = _resolve_components("edge", allow_empty=True)
         boundary_data = _boundary_edge_data()
         if not boundary_data:
@@ -597,7 +828,7 @@ def edit_mesh_boundary(
             for group in groups:
                 loop_edges = [_component("e", edge_id) for edge_id in group]
                 nodes.append(cmds.polyCloseBorder(loop_edges, constructionHistory=construction_history))
-        elif operation == "planarize_boundary_loops":
+        elif operation in {"planarize_boundary_loops", "regularize_boundary_loops"}:
             plane_mode = str(parameters.get("plane_mode", "axis")).lower().strip()
             if plane_mode not in {"axis", "best_fit"}:
                 raise ValueError("parameters.plane_mode must be axis or best_fit.")
@@ -615,20 +846,40 @@ def edit_mesh_boundary(
             plane_position = parameters.get("plane_position")
             if plane_position is not None:
                 plane_position = _validate_scalar(plane_position, "plane_position")
-            moved_vertices, moved_records, loop_reports = _planarize_groups(
-                groups,
-                boundary_data,
-                {
-                    "plane_mode": plane_mode,
-                    "axis_name": axis_name,
-                    "axis_index": axis_index,
-                    "position_mode": position_mode,
-                    "plane_position": plane_position,
-                    "strength": strength,
-                    "move_tolerance": move_tolerance,
-                    "allow_open_chains": allow_open_chains,
-                },
-            )
+            settings = {
+                "plane_mode": plane_mode,
+                "axis_name": axis_name,
+                "axis_index": axis_index,
+                "position_mode": position_mode,
+                "plane_position": plane_position,
+                "strength": strength,
+                "move_tolerance": move_tolerance,
+                "allow_open_chains": allow_open_chains,
+            }
+            report_key = "planarize_reports"
+            if operation == "planarize_boundary_loops":
+                moved_vertices, moved_records, loop_reports = _planarize_groups(groups, boundary_data, settings)
+            else:
+                radius_mode = str(parameters.get("radius_mode", "preserve")).lower().strip()
+                if radius_mode not in {"preserve", "mean", "min", "max", "value"}:
+                    raise ValueError("parameters.radius_mode must be preserve, mean, min, max, or value.")
+                radius_value = parameters.get("radius_value")
+                if radius_value is not None:
+                    radius_value = _validate_scalar(radius_value, "radius_value")
+                min_radius = _validate_scalar(parameters.get("min_radius", 1.0e-6), "min_radius")
+                if min_radius < 0.0:
+                    raise ValueError("parameters.min_radius must be greater than or equal to zero.")
+                angle_offset = _validate_scalar(parameters.get("angle_offset", 0.0), "angle_offset")
+                reverse_winding = bool(parameters.get("reverse_winding", False))
+                settings.update({
+                    "radius_mode": radius_mode,
+                    "radius_value": radius_value,
+                    "min_radius": min_radius,
+                    "angle_offset": angle_offset,
+                    "reverse_winding": reverse_winding,
+                })
+                moved_vertices, moved_records, loop_reports = _regularize_groups(groups, boundary_data, settings)
+                report_key = "regularize_reports"
             return _position_result(
                 resolved,
                 before_counts,
@@ -641,13 +892,18 @@ def edit_mesh_boundary(
                     "seed_edges_preview": [_component("e", edge_id) for edge_id in border_edge_ids[:max_preview]],
                     "edited_edge_count": len(target_edge_ids),
                     "edited_edges_preview": [_component("e", edge_id) for edge_id in target_edge_ids[:max_preview]],
-                    "planarize_reports": loop_reports,
+                    report_key: loop_reports,
                     "plane_mode": plane_mode,
                     "axis": axis_name if plane_mode == "axis" else None,
                     "position_mode": position_mode if plane_mode == "axis" else None,
                     "strength": strength,
                     "move_tolerance": move_tolerance,
                     "allow_open_chains": allow_open_chains,
+                    "radius_mode": settings.get("radius_mode"),
+                    "radius_value": settings.get("radius_value"),
+                    "min_radius": settings.get("min_radius"),
+                    "angle_offset": settings.get("angle_offset"),
+                    "reverse_winding": settings.get("reverse_winding"),
                 },
             )
         else:
@@ -655,11 +911,14 @@ def edit_mesh_boundary(
             if cap_mode not in {"ngon", "triangle_fan"}:
                 raise ValueError("parameters.cap_mode must be ngon or triangle_fan.")
             cap_method = str(parameters.get("cap_method", "auto")).lower().strip()
-            if cap_method not in {"auto", "poly_append_vertex", "api_points"}:
-                raise ValueError("parameters.cap_method must be auto, poly_append_vertex, or api_points.")
+            if cap_method not in {"auto", "poly_append_vertex", "poly_append_edge_fan", "api_points"}:
+                raise ValueError("parameters.cap_method must be auto, poly_append_vertex, poly_append_edge_fan, or api_points.")
             point_tolerance = _validate_scalar(parameters.get("point_tolerance", 1.0e-6), "point_tolerance")
             if point_tolerance < 0.0:
                 raise ValueError("parameters.point_tolerance must be greater than or equal to zero.")
+            center_merge_distance = _validate_scalar(parameters.get("center_merge_distance", 1.0e-5), "center_merge_distance")
+            if center_merge_distance < 0.0:
+                raise ValueError("parameters.center_merge_distance must be greater than or equal to zero.")
             texture = _validate_int(parameters.get("texture", 0), "texture", 0)
             reverse_winding = bool(parameters.get("reverse_winding", False))
             allow_open_chains = bool(parameters.get("allow_open_chains", False))
@@ -674,6 +933,7 @@ def edit_mesh_boundary(
                 "allow_open_chains": allow_open_chains,
                 "construction_history": construction_history,
                 "texture": texture,
+                "center_merge_distance": center_merge_distance,
             }
             if validate_on_duplicate:
                 duplicate = cmds.duplicate(object_name, name=f"{object_name}_cap_boundary_preview_tmp")[0]
