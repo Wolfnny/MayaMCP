@@ -20,10 +20,13 @@ def edit_mesh_boundary(
       no components are provided
     - cap_boundary_loops: create ngon or triangle-fan cap polygons for selected
       closed border loops using mesh vertex order
+    - planarize_boundary_loops: flatten selected border loop vertices to an
+      axis plane or best-fit loop plane before capping, sewing, or welding
 
     This is a Maya-style component repair tool for local mesh work: make an
-    opening, remove support edges, then close border loops while reporting
-    before/after topology counts and border edge changes.
+    opening, clean boundary vertex positions, remove support edges, then close
+    border loops while reporting before/after topology counts, border edge
+    changes, and vertex movement.
     """
     import re
     import maya.cmds as cmds
@@ -193,7 +196,7 @@ def edit_mesh_boundary(
                 groups.append(sorted(group))
         return groups
 
-    def _ordered_loop_vertices(edge_ids, boundary_data):
+    def _ordered_loop_vertices(edge_ids, boundary_data, allow_open_chains=False, operation_name="cap_boundary_loops"):
         adjacency = {}
         for edge_id in edge_ids:
             vertex_a, vertex_b = boundary_data[edge_id]
@@ -204,11 +207,11 @@ def edit_mesh_boundary(
         endpoint_vertices = sorted(vertex_id for vertex_id, neighbors in adjacency.items() if len(neighbors) == 1)
         if endpoint_vertices:
             if not allow_open_chains:
-                raise ValueError("cap_boundary_loops requires closed border loops unless parameters.allow_open_chains is true.")
+                raise ValueError(f"{operation_name} requires closed border loops unless parameters.allow_open_chains is true.")
             start = endpoint_vertices[0]
         else:
             if any(len(neighbors) != 2 for neighbors in adjacency.values()):
-                raise ValueError("cap_boundary_loops requires simple boundary loops where each vertex has two boundary neighbors.")
+                raise ValueError(f"{operation_name} requires simple boundary loops where each vertex has two boundary neighbors.")
             start = min(adjacency)
         ordered = [start]
         previous = None
@@ -234,6 +237,155 @@ def edit_mesh_boundary(
         if any(before[key] != after[key] for key in before):
             return True
         return len(border_before) != len(border_after)
+
+    def _axis_index(axis_name):
+        clean_axis = str(axis_name or "").lower().strip()
+        axis_map = {"x": 0, "y": 1, "z": 2}
+        if clean_axis not in axis_map:
+            raise ValueError("parameters.axis must be x, y, or z.")
+        return clean_axis, axis_map[clean_axis]
+
+    def _point_to_list(point):
+        return [float(point.x), float(point.y), float(point.z)]
+
+    def _distance(point_a, point_b):
+        return float(
+            (
+                (point_a.x - point_b.x) ** 2
+                + (point_a.y - point_b.y) ** 2
+                + (point_a.z - point_b.z) ** 2
+            )
+            ** 0.5
+        )
+
+    def _newell_normal(loop_points):
+        if len(loop_points) < 3:
+            return None
+        normal = [0.0, 0.0, 0.0]
+        for index, point in enumerate(loop_points):
+            next_point = loop_points[(index + 1) % len(loop_points)]
+            normal[0] += (point.y - next_point.y) * (point.z + next_point.z)
+            normal[1] += (point.z - next_point.z) * (point.x + next_point.x)
+            normal[2] += (point.x - next_point.x) * (point.y + next_point.y)
+        length = (normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2) ** 0.5
+        if length <= 0.0:
+            return None
+        return [float(normal[0] / length), float(normal[1] / length), float(normal[2] / length)]
+
+    def _average_point(vertex_ids, mesh_points):
+        center = om.MPoint()
+        for vertex_id in vertex_ids:
+            center += mesh_points[vertex_id]
+        return center / float(len(vertex_ids))
+
+    def _axis_plane_value(vertex_ids, mesh_points, axis_index, position_mode, plane_position):
+        values = [float(mesh_points[vertex_id][axis_index]) for vertex_id in vertex_ids]
+        if position_mode == "mean":
+            return float(sum(values) / len(values))
+        if position_mode == "min":
+            return float(min(values))
+        if position_mode == "max":
+            return float(max(values))
+        if position_mode == "value":
+            if plane_position is None:
+                raise ValueError("parameters.plane_position is required when parameters.position_mode is value.")
+            return float(plane_position)
+        raise ValueError("parameters.position_mode must be mean, min, max, or value.")
+
+    def _planarize_groups(groups, boundary_data, settings):
+        plane_mode = settings["plane_mode"]
+        strength = settings["strength"]
+        move_tolerance = settings["move_tolerance"]
+        allow_open_chains = settings["allow_open_chains"]
+        axis_name = settings["axis_name"]
+        axis_index = settings["axis_index"]
+        position_mode = settings["position_mode"]
+        plane_position = settings["plane_position"]
+        mesh_fn = om.MFnMesh(_mesh_dag(shape_name))
+        mesh_points = mesh_fn.getPoints(om.MSpace.kWorld)
+        moved_records = []
+        loop_reports = []
+        moved_vertices = set()
+
+        for group in groups:
+            ordered_vertices, closed = _ordered_loop_vertices(
+                group,
+                boundary_data,
+                allow_open_chains=allow_open_chains,
+                operation_name="planarize_boundary_loops",
+            )
+            if len(ordered_vertices) < 2:
+                raise ValueError("planarize_boundary_loops requires boundary chains with at least two vertices.")
+
+            if plane_mode == "axis":
+                target_value = _axis_plane_value(ordered_vertices, mesh_points, axis_index, position_mode, plane_position)
+                plane_normal = [0.0, 0.0, 0.0]
+                plane_normal[axis_index] = 1.0
+                center = _average_point(ordered_vertices, mesh_points)
+                center[axis_index] = target_value
+            else:
+                if not closed:
+                    raise ValueError("parameters.plane_mode best_fit requires closed boundary loops.")
+                loop_points = [mesh_points[vertex_id] for vertex_id in ordered_vertices]
+                plane_normal = _newell_normal(loop_points)
+                if plane_normal is None:
+                    raise ValueError("Could not compute a stable best-fit plane for boundary loop.")
+                center = _average_point(ordered_vertices, mesh_points)
+                target_value = None
+
+            loop_moved = []
+            max_displacement = 0.0
+            for vertex_id in ordered_vertices:
+                before_point = om.MPoint(mesh_points[vertex_id])
+                target_point = om.MPoint(before_point)
+                if plane_mode == "axis":
+                    target_point[axis_index] = before_point[axis_index] + (target_value - before_point[axis_index]) * strength
+                else:
+                    signed_distance = (
+                        (before_point.x - center.x) * plane_normal[0]
+                        + (before_point.y - center.y) * plane_normal[1]
+                        + (before_point.z - center.z) * plane_normal[2]
+                    )
+                    target_point.x = before_point.x - signed_distance * plane_normal[0] * strength
+                    target_point.y = before_point.y - signed_distance * plane_normal[1] * strength
+                    target_point.z = before_point.z - signed_distance * plane_normal[2] * strength
+
+                displacement = _distance(before_point, target_point)
+                max_displacement = max(max_displacement, displacement)
+                if displacement <= move_tolerance:
+                    continue
+                mesh_points[vertex_id] = target_point
+                moved_vertices.add(vertex_id)
+                if len(moved_records) < max_preview:
+                    moved_records.append({
+                        "vertex": _component("vtx", vertex_id),
+                        "before": _point_to_list(before_point),
+                        "after": _point_to_list(target_point),
+                        "displacement": displacement,
+                    })
+                loop_moved.append(vertex_id)
+
+            loop_reports.append({
+                "edge_count": len(group),
+                "ordered_vertex_count": len(ordered_vertices),
+                "closed": bool(closed),
+                "moved_vertex_count": len(loop_moved),
+                "max_displacement": max_displacement,
+                "plane_mode": plane_mode,
+                "axis": axis_name if plane_mode == "axis" else None,
+                "position_mode": position_mode if plane_mode == "axis" else None,
+                "plane_position": target_value,
+                "plane_normal": plane_normal,
+            })
+
+        if not moved_vertices:
+            raise RuntimeError("planarize_boundary_loops did not move any boundary vertices.")
+        mesh_fn.setPoints(mesh_points, om.MSpace.kWorld)
+        try:
+            mesh_fn.updateSurface()
+        except Exception:
+            pass
+        return moved_vertices, moved_records, loop_reports
 
     def _poly_info_components_for(target_object, flag_name):
         flag_map = {
@@ -268,7 +420,12 @@ def edit_mesh_boundary(
         mesh_points = mesh_fn.getPoints(om.MSpace.kObject)
         reports = []
         for group in groups:
-            ordered_vertices, closed = _ordered_loop_vertices(group, target_boundary_data)
+            ordered_vertices, closed = _ordered_loop_vertices(
+                group,
+                target_boundary_data,
+                allow_open_chains=cap_settings["allow_open_chains"],
+                operation_name="cap_boundary_loops",
+            )
             if len(ordered_vertices) < 3:
                 raise ValueError("cap_boundary_loops requires at least three ordered boundary vertices.")
             if reverse_winding:
@@ -299,6 +456,34 @@ def edit_mesh_boundary(
                 "added_faces_preview": [_prefixed_component(component_prefix, "f", face_id) for face_id in added_faces[:max_preview]],
             })
         return reports
+
+    def _position_result(resolved, before_counts, before_border, moved_vertices, moved_records, extra=None):
+        after_counts = _counts()
+        after_border = sorted(_boundary_edge_data())
+        current_selection = cmds.ls(selection=True, flatten=True) or []
+        payload = {
+            "success": True,
+            "object_name": object_name,
+            "operation": operation,
+            "node": None,
+            "input_component_count": len(resolved),
+            "input_components_preview": resolved[:max_preview],
+            "selected_after_count": len(current_selection),
+            "selected_after_preview": current_selection[:max_preview],
+            "counts_before": before_counts,
+            "counts_after": after_counts,
+            "border_edges_before_count": len(before_border),
+            "border_edges_after_count": len(after_border),
+            "border_edges_before_preview": [_component("e", edge_id) for edge_id in before_border[:max_preview]],
+            "border_edges_after_preview": [_component("e", edge_id) for edge_id in after_border[:max_preview]],
+            "moved_vertex_count": len(moved_vertices),
+            "moved_vertices_preview": [_component("vtx", vertex_id) for vertex_id in sorted(moved_vertices)[:max_preview]],
+            "position_changes_preview": moved_records,
+            "position_changes_truncated": len(moved_vertices) > len(moved_records),
+        }
+        if extra:
+            payload.update(extra)
+        return payload
 
     def _result(node_result, resolved, before_counts, before_border, extra=None):
         after_counts = _counts()
@@ -331,7 +516,7 @@ def edit_mesh_boundary(
     if not operation:
         raise ValueError("operation is required.")
     operation = operation.lower().strip()
-    allowed = {"delete_faces", "delete_edges", "fill_holes", "cap_boundary_loops"}
+    allowed = {"delete_faces", "delete_edges", "fill_holes", "cap_boundary_loops", "planarize_boundary_loops"}
     if operation not in allowed:
         raise ValueError(f"operation must be one of: {', '.join(sorted(allowed))}.")
 
@@ -362,7 +547,7 @@ def edit_mesh_boundary(
         )
         return _result(node, edges, before_counts, before_border, {"clean_vertices": clean_vertices})
 
-    if operation in {"fill_holes", "cap_boundary_loops"}:
+    if operation in {"fill_holes", "cap_boundary_loops", "planarize_boundary_loops"}:
         resolved = _resolve_components("edge", allow_empty=True)
         boundary_data = _boundary_edge_data()
         if not boundary_data:
@@ -390,6 +575,59 @@ def edit_mesh_boundary(
             for group in groups:
                 loop_edges = [_component("e", edge_id) for edge_id in group]
                 nodes.append(cmds.polyCloseBorder(loop_edges, constructionHistory=construction_history))
+        elif operation == "planarize_boundary_loops":
+            plane_mode = str(parameters.get("plane_mode", "axis")).lower().strip()
+            if plane_mode not in {"axis", "best_fit"}:
+                raise ValueError("parameters.plane_mode must be axis or best_fit.")
+            axis_name, axis_index = _axis_index(parameters.get("axis", "y"))
+            position_mode = str(parameters.get("position_mode", "mean")).lower().strip()
+            if position_mode not in {"mean", "min", "max", "value"}:
+                raise ValueError("parameters.position_mode must be mean, min, max, or value.")
+            strength = _validate_scalar(parameters.get("strength", 1.0), "strength")
+            if strength <= 0.0 or strength > 1.0:
+                raise ValueError("parameters.strength must be greater than 0 and less than or equal to 1.")
+            move_tolerance = _validate_scalar(parameters.get("move_tolerance", 1.0e-9), "move_tolerance")
+            if move_tolerance < 0.0:
+                raise ValueError("parameters.move_tolerance must be greater than or equal to zero.")
+            allow_open_chains = bool(parameters.get("allow_open_chains", True))
+            plane_position = parameters.get("plane_position")
+            if plane_position is not None:
+                plane_position = _validate_scalar(plane_position, "plane_position")
+            moved_vertices, moved_records, loop_reports = _planarize_groups(
+                groups,
+                boundary_data,
+                {
+                    "plane_mode": plane_mode,
+                    "axis_name": axis_name,
+                    "axis_index": axis_index,
+                    "position_mode": position_mode,
+                    "plane_position": plane_position,
+                    "strength": strength,
+                    "move_tolerance": move_tolerance,
+                    "allow_open_chains": allow_open_chains,
+                },
+            )
+            return _position_result(
+                resolved,
+                before_counts,
+                before_border,
+                moved_vertices,
+                moved_records,
+                {
+                    "edited_loop_count": len(groups),
+                    "seed_edge_count": len(border_edge_ids),
+                    "seed_edges_preview": [_component("e", edge_id) for edge_id in border_edge_ids[:max_preview]],
+                    "edited_edge_count": len(target_edge_ids),
+                    "edited_edges_preview": [_component("e", edge_id) for edge_id in target_edge_ids[:max_preview]],
+                    "planarize_reports": loop_reports,
+                    "plane_mode": plane_mode,
+                    "axis": axis_name if plane_mode == "axis" else None,
+                    "position_mode": position_mode if plane_mode == "axis" else None,
+                    "strength": strength,
+                    "move_tolerance": move_tolerance,
+                    "allow_open_chains": allow_open_chains,
+                },
+            )
         else:
             cap_mode = str(parameters.get("cap_mode", "ngon")).lower().strip()
             if cap_mode not in {"ngon", "triangle_fan"}:
@@ -406,6 +644,7 @@ def edit_mesh_boundary(
                 "cap_mode": cap_mode,
                 "point_tolerance": point_tolerance,
                 "reverse_winding": reverse_winding,
+                "allow_open_chains": allow_open_chains,
             }
             if validate_on_duplicate:
                 duplicate = cmds.duplicate(object_name, name=f"{object_name}_cap_boundary_preview_tmp")[0]
