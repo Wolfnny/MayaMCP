@@ -37,6 +37,9 @@ def compare_image_silhouettes(
     band_edges: List[float] = None,
     correction_profile_samples: int = None,
     scale_range: List[float] = None,
+    summary_only: bool = False,
+    include_row_samples: bool = True,
+    include_correction_profile_samples: bool = True,
 ) -> Dict[str, Any]:
     """Compare two image silhouettes and optionally write an overlap diagnostic.
 
@@ -57,7 +60,8 @@ def compare_image_silhouettes(
     candidate_background_color can be used when the compared images use
     different studio backgrounds. band_edges, correction_profile_samples, and
     scale_range are convenience aliases for the normalized band/profile
-    arguments.
+    arguments. Set summary_only or disable sample blocks when running frequent
+    QA passes where the aggregate metrics are enough.
     """
     import math
     import os
@@ -87,6 +91,11 @@ def compare_image_silhouettes(
         if not _is_number(value):
             raise ValueError(f"{arg_name} must be numeric.")
         return float(value)
+
+    def _validate_bool(value, arg_name):
+        if not isinstance(value, bool):
+            raise ValueError(f"{arg_name} must be a boolean.")
+        return value
 
     def _clamp(value, lower=0.0, upper=1.0):
         return max(lower, min(upper, value))
@@ -598,6 +607,16 @@ def compare_image_silhouettes(
             raise ValueError("Provide only one of scale_range or correction_profile_scale_range.")
         correction_profile_scale_range = scale_range
 
+    summary_only = _validate_bool(summary_only, "summary_only")
+    include_row_samples = _validate_bool(include_row_samples, "include_row_samples")
+    include_correction_profile_samples = _validate_bool(
+        include_correction_profile_samples,
+        "include_correction_profile_samples",
+    )
+    if summary_only:
+        include_row_samples = False
+        include_correction_profile_samples = False
+
     correction_profile_sample_count = _validate_int(correction_profile_sample_count, "correction_profile_sample_count", 0)
     if correction_profile_sample_count == 1:
         raise ValueError("correction_profile_sample_count must be 0 or an integer greater than or equal to 2.")
@@ -738,11 +757,20 @@ def compare_image_silhouettes(
     ref_aspect = (ref_bbox[2] - ref_bbox[0] + 1) / float(max(1, ref_bbox[3] - ref_bbox[1] + 1))
     cand_aspect = (cand_bbox[2] - cand_bbox[0] + 1) / float(max(1, cand_bbox[3] - cand_bbox[1] + 1))
 
-    return {
+    if not include_correction_profile_samples and correction_profile:
+        correction_profile = dict(correction_profile)
+        samples = correction_profile.get("samples_top_to_bottom", [])
+        correction_profile["samples_top_to_bottom"] = []
+        correction_profile["samples_omitted"] = len(samples) if isinstance(samples, list) else 0
+
+    result = {
         "success": True,
         "reference_image_path": reference_path,
         "candidate_image_path": candidate_path,
         "output_path": output_path,
+        "summary_only": summary_only,
+        "include_row_samples": include_row_samples,
+        "include_correction_profile_samples": include_correction_profile_samples,
         "mask_mode": mask_mode,
         "fill_holes": fill_holes,
         "align_mode": align_mode,
@@ -790,7 +818,9 @@ def compare_image_silhouettes(
         "mean_abs_width_error": width_metrics["mean_abs_width_error"],
         "max_abs_width_error": width_metrics["max_abs_width_error"],
         "mean_signed_width_error": width_metrics["mean_signed_width_error"],
-        "row_width_samples": width_metrics["samples"],
+        "row_width_samples": width_metrics["samples"] if include_row_samples else [],
+        "row_width_samples_omitted": 0 if include_row_samples else len(width_metrics["samples"]),
         "band_width_metrics": band_metrics,
         "correction_profile": correction_profile,
     }
+    return result
