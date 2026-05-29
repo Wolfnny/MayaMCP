@@ -83,9 +83,20 @@ with contextlib.redirect_stdout(_mcp_io_buf):
 _mcp_maya_results = _mcp_io_buf.getvalue()
 """
 
-    def _send_python_command(self, python_script:str) -> str:
+    @staticmethod
+    def _clean_command_result(result: Optional[str]) -> str:
+        if result is None:
+            return ""
+        return result.replace(chr(0), '').replace(chr(10), '')
+
+    def _send_python_command(self, python_script:str, *, wrap_python_exec:bool=False) -> Optional[str]:
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect((self.host, self.port))
+
+        if wrap_python_exec:
+            # Maya's Python commandPort can resolve function globals from an older
+            # interpreter scope unless the whole tool script is executed explicitly.
+            python_script = f"exec({python_script!r}, globals(), globals())"
 
         if self.source_type == "python":
             command = python_script
@@ -126,24 +137,25 @@ _mcp_maya_results = _mcp_io_buf.getvalue()
         else:
             python_script = "_mcp_maya_results = None\n" + python_script
 
-        result = self._send_python_command(python_script)
+        result = self._send_python_command(python_script, wrap_python_exec=True)
 
         # strip any extra characters added at the end
-        result = result.replace(chr(0), '')
-        result = result.replace(chr(10), '')
+        result = MayaConnection._clean_command_result(result)
 
-        if returns != MayaConnection.ScriptReturn.NONE and (not result or result == '\n'):
+        if returns == MayaConnection.ScriptReturn.NONE:
+            return None
+
+        output_var_tokens = {"_mcp_maya_results", "'_mcp_maya_results'", '"_mcp_maya_results"'}
+        if not result or result == '\n' or result in output_var_tokens:
             result = self._send_python_command("_mcp_maya_results")
             # strip any extra characters added at the end
-            result = result.replace(chr(0), '')
-            result = result.replace(chr(10), '')
+            result = MayaConnection._clean_command_result(result)
 
-        if returns != MayaConnection.ScriptReturn.NONE:
-            try:
-                result = json.loads(result)
-            except:
-                # if unable to parse as JSON, just return as is
-                pass
+        try:
+            result = json.loads(result)
+        except:
+            # if unable to parse as JSON, just return as is
+            pass
 
         return result
 
