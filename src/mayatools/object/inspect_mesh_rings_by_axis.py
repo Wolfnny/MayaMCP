@@ -8,6 +8,7 @@ def inspect_mesh_rings_by_axis(
     group_tolerance: float = 0.001,
     mode: str = "all",
     targets: List[float] = None,
+    axis_range: List[float] = None,
     target_tolerance: float = None,
     min_components_per_group: int = 1,
     max_groups: int = 100,
@@ -27,6 +28,7 @@ def inspect_mesh_rings_by_axis(
     - all: return all detected rings up to max_groups
     - nearest: return the closest ring for each target value
     - within: return rings within target_tolerance of any target value
+    - range: return rings whose axis span overlaps axis_range=[min, max]
     """
     import math
     import maya.cmds as cmds
@@ -54,6 +56,12 @@ def inspect_mesh_rings_by_axis(
         if not isinstance(values, list) or len(values) != length or not all(_is_number(item) for item in values):
             raise ValueError(f"{arg_name} must be a list of {length} numeric values.")
         return [float(item) for item in values]
+
+    def _validate_range(values, arg_name):
+        clean = _validate_vector(values, 2, arg_name)
+        if clean[0] > clean[1]:
+            clean = [clean[1], clean[0]]
+        return clean
 
     def _axis_index(axis_name):
         clean = (axis_name or "").lower().strip()
@@ -172,6 +180,19 @@ def inspect_mesh_rings_by_axis(
     def _filter_groups(groups):
         if clean_mode == "all":
             return groups[:clean_max_groups], []
+        if clean_mode == "range":
+            if clean_axis_range is None:
+                raise ValueError("axis_range must be provided when mode is range.")
+            lower, upper = clean_axis_range
+            matched = [group for group in groups if group["axis_max"] >= lower and group["axis_min"] <= upper]
+            return matched[:clean_max_groups], [
+                {
+                    "axis_range": clean_axis_range,
+                    "matched_count": len(matched),
+                    "matched_group_indices": [group["group_index"] for group in matched[:clean_max_preview]],
+                    "truncated": len(matched) > clean_max_preview,
+                }
+            ]
         if not clean_targets:
             raise ValueError("targets must be provided when mode is nearest or within.")
         if clean_mode == "nearest":
@@ -230,9 +251,10 @@ def inspect_mesh_rings_by_axis(
     clean_max_preview = _validate_int(max_preview, "max_preview", 0)
     include_components = _validate_bool(include_components, "include_components")
     clean_targets = _clean_targets()
+    clean_axis_range = None if axis_range is None else _validate_range(axis_range, "axis_range")
     clean_mode = (mode or "").lower().strip()
-    if clean_mode not in {"all", "nearest", "within"}:
-        raise ValueError("mode must be all, nearest, or within.")
+    if clean_mode not in {"all", "nearest", "within", "range"}:
+        raise ValueError("mode must be all, nearest, within, or range.")
     clean_space = (space or "").lower().strip()
     if clean_space not in {"world", "object"}:
         raise ValueError("space must be world or object.")
@@ -254,6 +276,7 @@ def inspect_mesh_rings_by_axis(
         "space": clean_space,
         "mode": clean_mode,
         "targets": clean_targets,
+        "axis_range": clean_axis_range,
         "group_tolerance": clean_group_tolerance,
         "target_tolerance": clean_target_tolerance,
         "min_components_per_group": clean_min_components,

@@ -6,6 +6,7 @@ def select_mesh_rings_by_axis(
     result_type: str = "vertex",
     axis: str = "y",
     targets: List[float] = None,
+    axis_range: List[float] = None,
     mode: str = "nearest",
     group_tolerance: float = 0.001,
     target_tolerance: float = None,
@@ -21,6 +22,7 @@ def select_mesh_rings_by_axis(
     Modes:
     - nearest: find the closest coordinate group for each target value
     - within: find all coordinate groups within target_tolerance of each target
+    - range: find all coordinate groups whose axis span overlaps axis_range
     - all: report all coordinate groups, limited by max_groups
 
     This is a generic Maya-style component navigation tool for meshes with
@@ -44,6 +46,17 @@ def select_mesh_rings_by_axis(
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f"{arg_name} must be an integer greater than or equal to {minimum}.")
         return int(value)
+
+    def _validate_vector(values, length, arg_name):
+        if not isinstance(values, list) or len(values) != length or not all(_is_number(item) for item in values):
+            raise ValueError(f"{arg_name} must be a list of {length} numeric values.")
+        return [float(item) for item in values]
+
+    def _validate_range(values, arg_name):
+        clean = _validate_vector(values, 2, arg_name)
+        if clean[0] > clean[1]:
+            clean = [clean[1], clean[0]]
+        return clean
 
     def _axis_index(axis_name):
         clean_axis = (axis_name or "").lower().strip()
@@ -157,6 +170,18 @@ def select_mesh_rings_by_axis(
     def _pick_groups(groups):
         if clean_mode == "all":
             return groups[:clean_max_groups]
+        if clean_mode == "range":
+            if clean_axis_range is None:
+                raise ValueError("axis_range is required for range mode.")
+            lower, upper = clean_axis_range
+            records = []
+            for group in groups:
+                if group["axis_max"] < lower or group["axis_min"] > upper:
+                    continue
+                record = dict(group)
+                record["axis_range"] = clean_axis_range
+                records.append(record)
+            return records[:clean_max_groups]
         if not clean_targets:
             raise ValueError("targets are required for nearest and within modes.")
         picked = []
@@ -204,8 +229,8 @@ def select_mesh_rings_by_axis(
     if clean_result_type not in {"vertex", "edge", "face"}:
         raise ValueError("result_type must be vertex, edge, or face.")
     clean_mode = mode.lower().strip()
-    if clean_mode not in {"nearest", "within", "all"}:
-        raise ValueError("mode must be nearest, within, or all.")
+    if clean_mode not in {"nearest", "within", "range", "all"}:
+        raise ValueError("mode must be nearest, within, range, or all.")
     clean_group_tolerance = _validate_scalar(group_tolerance, "group_tolerance")
     if clean_group_tolerance < 0.0:
         raise ValueError("group_tolerance must be greater than or equal to zero.")
@@ -226,6 +251,7 @@ def select_mesh_rings_by_axis(
         if not isinstance(targets, list) or not all(_is_number(item) for item in targets):
             raise ValueError("targets must be a list of numeric values.")
         clean_targets = [float(item) for item in targets]
+    clean_axis_range = None if axis_range is None else _validate_range(axis_range, "axis_range")
 
     axis_idx = _axis_index(axis)
     shape_name = _mesh_shape(object_name)
@@ -261,6 +287,7 @@ def select_mesh_rings_by_axis(
         "space": space,
         "mode": clean_mode,
         "targets": clean_targets,
+        "axis_range": clean_axis_range,
         "group_tolerance": clean_group_tolerance,
         "target_tolerance": clean_target_tolerance,
         "min_components_per_group": clean_min_components,
