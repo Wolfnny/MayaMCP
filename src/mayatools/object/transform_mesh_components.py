@@ -22,6 +22,7 @@ def transform_mesh_components(
     center: List[float] = None,
     radius_mode: str = "explicit",
     space: str = "world",
+    select_result: bool = True,
     use_selection: bool = True,
     max_preview: int = 20,
 ) -> Dict[str, Any]:
@@ -42,6 +43,9 @@ def transform_mesh_components(
     vertices, so this supports Maya-style local loop scaling, point flattening,
     coordinate alignment, and manual proportional shaping without global
     procedural deformation.
+    Set select_result=False for scripted or high-volume edits where preserving
+    the previous viewport selection is more useful than selecting all edited
+    vertices.
     """
     import math
     import re
@@ -427,7 +431,10 @@ def transform_mesh_components(
 
     updated_points = mesh_fn.getPoints(om_space)
     after_preview = _point_preview(vertex_ids, updated_points)
-    cmds.select([f"{prefix_name}.vtx[{vertex_id}]" for vertex_id in vertex_ids], replace=True)
+    if select_result:
+        cmds.select([f"{prefix_name}.vtx[{vertex_id}]" for vertex_id in vertex_ids], replace=True)
+    else:
+        cmds.select(clear=True)
 
     return {
         "success": True,
@@ -437,6 +444,7 @@ def transform_mesh_components(
         "component_type": component_type,
         "space": space,
         "resolved_vertex_count": len(vertex_ids),
+        "select_result": bool(select_result),
         "resolved_vertices_preview": vertex_ids[:max_preview],
         "selection_bounds_before": {
             "min": selection_min,
