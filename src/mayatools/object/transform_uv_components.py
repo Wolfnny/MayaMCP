@@ -20,6 +20,7 @@ def transform_uv_components(
     pivot_mode: str = "selection_center",
     uv_set: str = None,
     expand_uv_shell: bool = False,
+    select_result: bool = True,
     use_selection: bool = True,
     max_preview: int = 50,
 ) -> Dict[str, Any]:
@@ -37,6 +38,8 @@ def transform_uv_components(
     faces/edges/vertices, or expanded to their UV shell. This supports localized
     UV layout work for labels, decals, panels, seams, and texture islands
     without remapping an entire mesh.
+    Set select_result=False for automated previews or high-volume edits where
+    leaving thousands of UVs selected would obscure the viewport.
     """
     import math
     import re
@@ -358,7 +361,8 @@ def transform_uv_components(
         _set_uvs(updated_uvs)
         after_records = _query_uvs(uv_items)
         bounds_after = _bounds(after_records)
-        cmds.select(uv_items, replace=True)
+        if select_result:
+            cmds.select(uv_items, replace=True)
 
         return {
             "success": True,
@@ -367,6 +371,7 @@ def transform_uv_components(
             "uv_set": uv_set or previous_uv_set,
             "uv_count": len(uv_items),
             "expand_uv_shell": bool(expand_uv_shell),
+            "select_result": bool(select_result),
             "bounds_before": bounds_before,
             "bounds_after": bounds_after,
             "applied": applied,
