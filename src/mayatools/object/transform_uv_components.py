@@ -113,6 +113,15 @@ def transform_uv_components(
         match = re.search(r"\.map\[(\d+)\]$", component)
         return int(match.group(1)) if match else None
 
+    def _mesh_fn():
+        try:
+            import maya.api.OpenMaya as om
+        except Exception as exc:
+            raise RuntimeError("maya.api.OpenMaya is required for bulk UV edits.") from exc
+        selection = om.MSelectionList()
+        selection.add(shape_name)
+        return om.MFnMesh(selection.getDagPath(0))
+
     def _resolve_uv_components():
         if uv_indices is not None:
             if not isinstance(uv_indices, list) or not all(isinstance(index, int) and not isinstance(index, bool) for index in uv_indices):
@@ -136,20 +145,36 @@ def transform_uv_components(
         return uv_items
 
     def _query_uvs(items):
-        values = cmds.polyEditUV(items, query=True) or []
-        records = []
-        for index, component in enumerate(items):
-            value_index = index * 2
-            if value_index + 1 >= len(values):
-                continue
-            records.append(
-                {
-                    "component": component,
-                    "index": _uv_id(component),
-                    "uv": [float(values[value_index]), float(values[value_index + 1])],
-                }
-            )
-        return records
+        uv_ids = [_uv_id(component) for component in items]
+        try:
+            u_values, v_values = _mesh_fn().getUVs(active_uv_set)
+            records = []
+            for component, uv_id in zip(items, uv_ids):
+                if uv_id is None or uv_id < 0 or uv_id >= len(u_values):
+                    continue
+                records.append(
+                    {
+                        "component": component,
+                        "index": uv_id,
+                        "uv": [float(u_values[uv_id]), float(v_values[uv_id])],
+                    }
+                )
+            return records
+        except Exception:
+            values = cmds.polyEditUV(items, query=True) or []
+            records = []
+            for index, component in enumerate(items):
+                value_index = index * 2
+                if value_index + 1 >= len(values):
+                    continue
+                records.append(
+                    {
+                        "component": component,
+                        "index": uv_ids[index],
+                        "uv": [float(values[value_index]), float(values[value_index + 1])],
+                    }
+                )
+            return records
 
     def _bounds(records):
         if not records:
@@ -198,8 +223,25 @@ def transform_uv_components(
         raise ValueError("value_mode must be explicit, selection_min, selection_max, or selection_center.")
 
     def _set_uvs(updated_by_component):
-        for component, uv_value in updated_by_component.items():
-            cmds.polyEditUV(component, relative=False, uValue=uv_value[0], vValue=uv_value[1])
+        if not updated_by_component:
+            return
+        try:
+            mesh_fn = _mesh_fn()
+            u_values, v_values = mesh_fn.getUVs(active_uv_set)
+            u_values = list(u_values)
+            v_values = list(v_values)
+            for component, uv_value in updated_by_component.items():
+                uv_id = _uv_id(component)
+                if uv_id is None or uv_id < 0 or uv_id >= len(u_values):
+                    continue
+                u_values[uv_id] = float(uv_value[0])
+                v_values[uv_id] = float(uv_value[1])
+            mesh_fn.setUVs(u_values, v_values, active_uv_set)
+            mesh_fn.updateSurface()
+            return
+        except Exception:
+            for component, uv_value in updated_by_component.items():
+                cmds.polyEditUV(component, relative=False, uValue=uv_value[0], vValue=uv_value[1])
 
     def _fit_to_box(records, bounds):
         box = _validate_vector(target_box or [0.0, 0.0, 1.0, 1.0], 4, "target_box")
@@ -243,6 +285,7 @@ def transform_uv_components(
         if uv_set not in all_uv_sets:
             raise ValueError(f"UV set {uv_set} does not exist on {object_name}.")
         cmds.polyUVSet(object_name, currentUVSet=True, uvSet=uv_set)
+    active_uv_set = uv_set or previous_uv_set
 
     try:
         uv_items = _resolve_uv_components()
