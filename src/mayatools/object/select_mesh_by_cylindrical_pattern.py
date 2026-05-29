@@ -307,7 +307,7 @@ def select_mesh_by_cylindrical_pattern(
         raise ValueError("angular_duty_cycle must be between 0 and 1.")
     if clean_axis_duty < 0.0 or clean_axis_duty > 1.0:
         raise ValueError("axis_duty_cycle must be between 0 and 1.")
-    max_preview = _validate_int(max_preview, "max_preview", 1)
+    max_preview = _validate_int(max_preview, "max_preview", 0)
 
     shape_name = _mesh_shape(object_name)
     prefix_name = _prefix(shape_name)

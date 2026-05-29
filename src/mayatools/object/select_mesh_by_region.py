@@ -318,7 +318,7 @@ def select_mesh_by_region(
     space = space.lower().strip()
     if space not in {"world", "object"}:
         raise ValueError("space must be world or object.")
-    max_preview = _validate_int(max_preview, "max_preview", 1)
+    max_preview = _validate_int(max_preview, "max_preview", 0)
 
     shape_name = _mesh_shape(object_name)
     prefix_name = _prefix(shape_name)
