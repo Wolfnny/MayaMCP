@@ -19,6 +19,8 @@ def soft_transform_mesh_components(
     center_mode: str = "origin",
     radius_mode: str = "explicit",
     falloff_radius: float = 1.0,
+    falloff_mode: str = "distance",
+    topology_depth: int = 3,
     falloff_curve: str = "smooth",
     strength: float = 1.0,
     affect_all_vertices: bool = True,
@@ -41,9 +43,10 @@ def soft_transform_mesh_components(
     Seed components can be explicit, indexed, or current selection. Edges,
     faces, UVs, and vertex-faces are converted to seed vertices. When
     affect_all_vertices is true, nearby mesh vertices are included according to
-    falloff_radius, matching Maya's soft selection workflow for hand shaping
-    shoulders, waists, lips, dents, and other local form changes without hard
-    ring artifacts.
+    falloff_radius. Set falloff_mode="topology" to include connected vertex
+    rings by topology_depth instead of world-space distance, matching Maya's
+    soft selection workflow for hand shaping shoulders, waists, lips, dents,
+    and other local form changes without hard ring artifacts.
     """
     import math
     import re
@@ -195,6 +198,17 @@ def soft_transform_mesh_components(
             edge_it.next()
         return boundary
 
+    def _edge_adjacency():
+        adjacency = {vertex_id: set() for vertex_id in range(mesh_fn.numVertices)}
+        edge_it = om.MItMeshEdge(dag)
+        while not edge_it.isDone():
+            vertex_a = int(edge_it.vertexId(0))
+            vertex_b = int(edge_it.vertexId(1))
+            adjacency[vertex_a].add(vertex_b)
+            adjacency[vertex_b].add(vertex_a)
+            edge_it.next()
+        return adjacency
+
     def _falloff_weight(distance, radius):
         if distance <= 1.0e-9:
             return clean_strength
@@ -211,7 +225,7 @@ def soft_transform_mesh_components(
             weight = 1.0 - (t * t * (3.0 - 2.0 * t))
         return weight * clean_strength
 
-    def _candidate_weights(current_points):
+    def _distance_candidate_weights(current_points):
         candidates = list(range(mesh_fn.numVertices)) if affect_all_vertices else seed_vertex_ids[:]
         seed_points = [current_points[vertex_id] for vertex_id in seed_vertex_ids]
         weights = {}
@@ -227,6 +241,45 @@ def soft_transform_mesh_components(
                     "distance": float(minimum_distance),
                 }
         return weights
+
+    def _topology_candidate_weights():
+        if not affect_all_vertices:
+            candidates = {vertex_id: 0 for vertex_id in seed_vertex_ids}
+        else:
+            adjacency = _edge_adjacency()
+            candidates = {}
+            frontier = list(seed_vertex_ids)
+            for vertex_id in frontier:
+                candidates[vertex_id] = 0
+            depth = 0
+            while frontier and depth < clean_topology_depth:
+                next_frontier = []
+                next_depth = depth + 1
+                for vertex_id in frontier:
+                    for neighbor_id in adjacency.get(vertex_id, []):
+                        if neighbor_id in candidates:
+                            continue
+                        candidates[neighbor_id] = next_depth
+                        next_frontier.append(neighbor_id)
+                frontier = next_frontier
+                depth = next_depth
+        weights = {}
+        topology_radius = float(clean_topology_depth + 1)
+        for vertex_id, depth in candidates.items():
+            if vertex_id in boundary_vertices:
+                continue
+            weight = _falloff_weight(float(depth), topology_radius)
+            if weight > 1.0e-9:
+                weights[vertex_id] = {
+                    "weight": weight,
+                    "distance": float(depth),
+                }
+        return weights
+
+    def _candidate_weights(current_points):
+        if clean_falloff_mode == "topology":
+            return _topology_candidate_weights()
+        return _distance_candidate_weights(current_points)
 
     def _pivot(current_points):
         if pivot is not None:
@@ -345,6 +398,10 @@ def soft_transform_mesh_components(
     clean_falloff_radius = _validate_scalar(falloff_radius, "falloff_radius")
     if clean_falloff_radius < 0.0:
         raise ValueError("falloff_radius must be greater than or equal to zero.")
+    clean_falloff_mode = (falloff_mode or "").lower().strip()
+    if clean_falloff_mode not in {"distance", "topology"}:
+        raise ValueError("falloff_mode must be distance or topology.")
+    clean_topology_depth = _validate_int(topology_depth, "topology_depth", 0)
     clean_strength = _validate_scalar(strength, "strength")
     if clean_strength < 0.0 or clean_strength > 1.0:
         raise ValueError("strength must be between 0 and 1.")
@@ -485,6 +542,8 @@ def soft_transform_mesh_components(
         "seed_vertices_preview": seed_vertex_ids[:max_preview],
         "moved_vertices_preview": moved_ids[:max_preview],
         "falloff_radius": clean_falloff_radius,
+        "falloff_mode": clean_falloff_mode,
+        "topology_depth": clean_topology_depth,
         "falloff_curve": clean_falloff_curve,
         "strength": clean_strength,
         "affect_all_vertices": bool(affect_all_vertices),
