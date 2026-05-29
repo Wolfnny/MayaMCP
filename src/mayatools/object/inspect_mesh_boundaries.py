@@ -19,7 +19,8 @@ def inspect_mesh_boundaries(
     Reports connected border-edge groups with edge/vertex counts, whether the
     group is a closed loop or open chain, world-space center, bounding box,
     perimeter, ordered component previews, edge-length statistics, simple loop
-    topology, duplicate position diagnostics, and planarity diagnostics.
+    topology, duplicate position diagnostics, planarity diagnostics, and
+    projected self-intersection diagnostics.
     Components can be supplied as seed vertices/edges/faces to return only
     boundary loops touching those seeds. This is useful before fill-hole,
     bridge, sew, cap, delete-edge, or weld work so an artist can decide which
@@ -276,6 +277,104 @@ def inspect_mesh_boundaries(
             "warning": None,
         }
 
+    def _segment_orientation(point_a, point_b, point_c):
+        return (
+            (point_b[0] - point_a[0]) * (point_c[1] - point_a[1])
+            - (point_b[1] - point_a[1]) * (point_c[0] - point_a[0])
+        )
+
+    def _on_segment(point_a, point_b, point_c, epsilon):
+        return (
+            min(point_a[0], point_b[0]) - epsilon <= point_c[0] <= max(point_a[0], point_b[0]) + epsilon
+            and min(point_a[1], point_b[1]) - epsilon <= point_c[1] <= max(point_a[1], point_b[1]) + epsilon
+            and abs(_segment_orientation(point_a, point_b, point_c)) <= epsilon
+        )
+
+    def _segments_intersect(seg_a, seg_b, epsilon=1.0e-9):
+        point_a, point_b = seg_a
+        point_c, point_d = seg_b
+        orient_1 = _segment_orientation(point_a, point_b, point_c)
+        orient_2 = _segment_orientation(point_a, point_b, point_d)
+        orient_3 = _segment_orientation(point_c, point_d, point_a)
+        orient_4 = _segment_orientation(point_c, point_d, point_b)
+        if (
+            ((orient_1 > epsilon and orient_2 < -epsilon) or (orient_1 < -epsilon and orient_2 > epsilon))
+            and ((orient_3 > epsilon and orient_4 < -epsilon) or (orient_3 < -epsilon and orient_4 > epsilon))
+        ):
+            return True
+        if abs(orient_1) <= epsilon and _on_segment(point_a, point_b, point_c, epsilon):
+            return True
+        if abs(orient_2) <= epsilon and _on_segment(point_a, point_b, point_d, epsilon):
+            return True
+        if abs(orient_3) <= epsilon and _on_segment(point_c, point_d, point_a, epsilon):
+            return True
+        if abs(orient_4) <= epsilon and _on_segment(point_c, point_d, point_b, epsilon):
+            return True
+        return False
+
+    def _self_intersections(loop_vertex_ids, ordered_edge_ids, is_closed, normal, axis_span, max_items):
+        if not is_closed:
+            return {
+                "computed": False,
+                "count": None,
+                "projection_axis_dropped": None,
+                "intersections": [],
+                "intersections_truncated": False,
+                "warning": "Self-intersection is computed only for closed ordered loops.",
+            }
+        if len(loop_vertex_ids) < 4:
+            return {
+                "computed": True,
+                "count": 0,
+                "projection_axis_dropped": None,
+                "intersections": [],
+                "intersections_truncated": False,
+                "warning": None,
+            }
+        if normal:
+            drop_axis = max(range(3), key=lambda index: abs(normal[index]))
+        else:
+            drop_axis = axis_span.index(min(axis_span))
+        keep_axes = [index for index in range(3) if index != drop_axis]
+        projected = {}
+        for vertex_id in loop_vertex_ids:
+            point = points[vertex_id]
+            projected[vertex_id] = (float(point[keep_axes[0]]), float(point[keep_axes[1]]))
+        segment_count = len(loop_vertex_ids)
+        intersections = []
+        for index_a in range(segment_count):
+            a0 = loop_vertex_ids[index_a]
+            a1 = loop_vertex_ids[(index_a + 1) % segment_count]
+            seg_a = (projected[a0], projected[a1])
+            for index_b in range(index_a + 1, segment_count):
+                if abs(index_a - index_b) <= 1:
+                    continue
+                if index_a == 0 and index_b == segment_count - 1:
+                    continue
+                b0 = loop_vertex_ids[index_b]
+                b1 = loop_vertex_ids[(index_b + 1) % segment_count]
+                seg_b = (projected[b0], projected[b1])
+                if not _segments_intersect(seg_a, seg_b):
+                    continue
+                edge_a = ordered_edge_ids[index_a] if index_a < len(ordered_edge_ids) else None
+                edge_b = ordered_edge_ids[index_b] if index_b < len(ordered_edge_ids) else None
+                intersections.append({
+                    "segment_index_a": index_a,
+                    "segment_index_b": index_b,
+                    "edge_a": _component("e", edge_a) if edge_a is not None else None,
+                    "edge_b": _component("e", edge_b) if edge_b is not None else None,
+                    "vertices_a": [_component("vtx", a0), _component("vtx", a1)],
+                    "vertices_b": [_component("vtx", b0), _component("vtx", b1)],
+                })
+        return {
+            "computed": True,
+            "count": len(intersections),
+            "projection_axis_dropped": ["x", "y", "z"][drop_axis],
+            "intersections": intersections[:max_items],
+            "intersections_truncated": len(intersections) > max_items,
+            "warning": None,
+        }
+
     def _duplicate_positions(vertex_ids, tolerance, max_groups):
         if tolerance <= 0.0:
             return {
@@ -396,6 +495,14 @@ def inspect_mesh_boundaries(
         endpoint_vertices = [vertex_id for vertex_id, degree in degrees.items() if degree == 1]
         duplicate_positions = _duplicate_positions(vertex_ids, clean_position_tolerance, clean_max_components_per_loop)
         planarity = _planarity(ordered_vertex_ids, closed and ordered["complete"], clean_planarity_tolerance)
+        self_intersections = _self_intersections(
+            ordered_vertex_ids,
+            ordered["edge_ids"],
+            closed and ordered["complete"],
+            planarity.get("normal"),
+            axis_span,
+            clean_max_components_per_loop,
+        )
         loops.append({
             "loop_index": len(loops),
             "closed": closed,
@@ -424,6 +531,7 @@ def inspect_mesh_boundaries(
                 "vertex_components_truncated": len(ordered_vertex_ids) > clean_max_components_per_loop,
             },
             "planarity": planarity,
+            "self_intersections": self_intersections,
             "duplicate_positions": duplicate_positions,
             "edge_components": [_component("e", edge_id) for edge_id in group[:clean_max_components_per_loop]],
             "edge_components_truncated": len(group) > clean_max_components_per_loop,
