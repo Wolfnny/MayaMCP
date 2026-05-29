@@ -47,7 +47,9 @@ def map_silhouette_errors_to_components(
     Set side_component_band_world to return left/right side component groups
     within a projected world-space distance from each silhouette side, or set
     selection_scope="side" to select those side groups for artist-style local
-    silhouette edits.
+    silhouette edits. Each mapped row also reports suggested world-space move
+    vectors for the min-screen-x and max-screen-x sides; applying a fraction of
+    those vectors expands or contracts the silhouette width for that row.
     """
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
@@ -496,6 +498,16 @@ def map_silhouette_errors_to_components(
         center_screen_y = float(world_point * up_vector)
         width_error_world = _world_width_error(row["signed_error"])
         side_offset_world = -0.5 * width_error_world
+        left_side_move_vector = [
+            float(-right_axis.x * side_offset_world),
+            float(-right_axis.y * side_offset_world),
+            float(-right_axis.z * side_offset_world),
+        ]
+        right_side_move_vector = [
+            float(right_axis.x * side_offset_world),
+            float(right_axis.y * side_offset_world),
+            float(right_axis.z * side_offset_world),
+        ]
         object_reports = []
         for shape_info in shapes:
             report = _component_records_for_band(shape_info["shape_name"], shape_info["prefix"], center_screen_y, band_world)
@@ -541,6 +553,8 @@ def map_silhouette_errors_to_components(
             "screen_y_band": [center_screen_y - band_world, center_screen_y + band_world],
             "world_width_error_estimate": float(width_error_world),
             "suggested_symmetric_side_offset_world": float(side_offset_world),
+            "suggested_left_side_move_vector_world": left_side_move_vector,
+            "suggested_right_side_move_vector_world": right_side_move_vector,
             "object_reports": object_reports,
         })
 
