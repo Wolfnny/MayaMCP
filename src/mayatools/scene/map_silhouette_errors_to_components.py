@@ -21,6 +21,9 @@ def map_silhouette_errors_to_components(
     max_rows: int = 12,
     row_band_pixels: float = 8.0,
     extreme_count: int = 3,
+    component_detail: str = "extremes",
+    selection_scope: str = "extremes",
+    max_components_per_row_object: int = 200,
     select_components: bool = False,
     selection_mode: str = "replace",
     max_preview: int = 200,
@@ -36,6 +39,10 @@ def map_silhouette_errors_to_components(
     vehicle, bottle, or other mesh silhouette against a reference image. Rows
     may pass through polygon edges without containing vertices, so the report
     includes both nearby vertices and edge crossings at the sampled row.
+    By default the report returns only left/right extreme previews to keep MCP
+    payloads small. Set component_detail="all" to include capped per-row vertex
+    and crossing-edge component records; set selection_scope="all" to select
+    those capped full row component sets instead of just extreme previews.
     """
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
@@ -183,6 +190,11 @@ def map_silhouette_errors_to_components(
         source_pixels = compare_pixels * source_region_height / canvas_height
         return source_pixels * resolved_orthographic_width / float(max(1, clean_image_width - 1))
 
+    def _truncate_records(records, limit):
+        if limit == 0:
+            return [], bool(records)
+        return records[:limit], len(records) > limit
+
     def _component_records_for_band(shape, prefix, center_screen_y, band_world):
         mesh_fn = _mesh_fn(shape)
         points = mesh_fn.getPoints(om.MSpace.kWorld)
@@ -202,13 +214,25 @@ def map_silhouette_errors_to_components(
                 "screen_y": screen_y,
             })
         if not records:
-            return {"candidate_count": 0, "left": [], "right": []}
+            return {
+                "candidate_count": 0,
+                "left": [],
+                "right": [],
+                "vertices": [],
+                "vertices_truncated": False,
+                "_selection_vertices": [],
+            }
         left = sorted(records, key=lambda item: (item["screen_x"], item["index"]))[:clean_extreme_count]
         right = sorted(records, key=lambda item: (-item["screen_x"], item["index"]))[:clean_extreme_count]
+        ordered_records = sorted(records, key=lambda item: item["index"])
+        detailed_records, records_truncated = _truncate_records(ordered_records, clean_max_components_per_row_object)
         return {
             "candidate_count": len(records),
             "left": left,
             "right": right,
+            "vertices": detailed_records if clean_component_detail == "all" else [],
+            "vertices_truncated": records_truncated if clean_component_detail == "all" else False,
+            "_selection_vertices": [item["component"] for item in detailed_records],
         }
 
     def _edge_records_for_row(shape, prefix, center_screen_y, band_world):
@@ -265,13 +289,25 @@ def map_silhouette_errors_to_components(
             )
             edge_it.next()
         if not records:
-            return {"crossing_edge_count": 0, "left_edges": [], "right_edges": []}
+            return {
+                "crossing_edge_count": 0,
+                "left_edges": [],
+                "right_edges": [],
+                "crossing_edges": [],
+                "crossing_edges_truncated": False,
+                "_selection_edges": [],
+            }
         left_edges = sorted(records, key=lambda item: (item["screen_x"], item["index"]))[:clean_extreme_count]
         right_edges = sorted(records, key=lambda item: (-item["screen_x"], item["index"]))[:clean_extreme_count]
+        ordered_records = sorted(records, key=lambda item: item["index"])
+        detailed_records, records_truncated = _truncate_records(ordered_records, clean_max_components_per_row_object)
         return {
             "crossing_edge_count": len(records),
             "left_edges": left_edges,
             "right_edges": right_edges,
+            "crossing_edges": detailed_records if clean_component_detail == "all" else [],
+            "crossing_edges_truncated": records_truncated if clean_component_detail == "all" else False,
+            "_selection_edges": [item["component"] for item in detailed_records],
         }
 
     if not target_objects or not isinstance(target_objects, list) or not all(isinstance(item, str) for item in target_objects):
@@ -293,6 +329,13 @@ def map_silhouette_errors_to_components(
     clean_max_rows = _validate_int(max_rows, "max_rows", 1)
     clean_row_band_pixels = _validate_scalar(row_band_pixels, "row_band_pixels")
     clean_extreme_count = _validate_int(extreme_count, "extreme_count", 1)
+    clean_component_detail = (component_detail or "").lower().strip()
+    if clean_component_detail not in {"extremes", "all"}:
+        raise ValueError("component_detail must be extremes or all.")
+    clean_selection_scope = (selection_scope or "").lower().strip()
+    if clean_selection_scope not in {"extremes", "all"}:
+        raise ValueError("selection_scope must be extremes or all.")
+    clean_max_components_per_row_object = _validate_int(max_components_per_row_object, "max_components_per_row_object", 0)
     max_preview = _validate_int(max_preview, "max_preview", 0)
     clean_align_mode = (align_mode or "").lower().strip()
     if clean_align_mode not in {"bbox", "crop"}:
@@ -387,10 +430,16 @@ def map_silhouette_errors_to_components(
                 report["right"] = report["right"][:max_preview]
                 edge_report["left_edges"] = edge_report["left_edges"][:max_preview]
                 edge_report["right_edges"] = edge_report["right_edges"][:max_preview]
-            selected_components.extend(item["component"] for item in report["left"])
-            selected_components.extend(item["component"] for item in report["right"])
-            selected_components.extend(item["component"] for item in edge_report["left_edges"])
-            selected_components.extend(item["component"] for item in edge_report["right_edges"])
+            if clean_selection_scope == "all":
+                selected_components.extend(report["_selection_vertices"])
+                selected_components.extend(edge_report["_selection_edges"])
+            else:
+                selected_components.extend(item["component"] for item in report["left"])
+                selected_components.extend(item["component"] for item in report["right"])
+                selected_components.extend(item["component"] for item in edge_report["left_edges"])
+                selected_components.extend(item["component"] for item in edge_report["right_edges"])
+            report.pop("_selection_vertices", None)
+            edge_report.pop("_selection_edges", None)
             object_reports.append({
                 "object_name": shape_info["object_name"],
                 "shape_name": shape_info["shape_name"],
@@ -436,6 +485,9 @@ def map_silhouette_errors_to_components(
         "min_abs_error": clean_min_abs_error,
         "row_band_pixels": clean_row_band_pixels,
         "row_band_world": float(band_world),
+        "component_detail": clean_component_detail,
+        "selection_scope": clean_selection_scope,
+        "max_components_per_row_object": clean_max_components_per_row_object,
         "world_units_per_image_pixel": float(world_units_per_image_pixel),
         "error_row_count": len(rows),
         "mapped_row_count": sum(1 for row in mapped_rows if row.get("mapped")),
