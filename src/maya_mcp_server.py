@@ -6,6 +6,7 @@ import socket
 import inspect
 import importlib
 import traceback
+import tempfile
 from enum import Enum
 from typing import Sequence, List, Any, Dict, Optional, get_origin
 import pprint
@@ -89,6 +90,34 @@ _mcp_maya_results = _mcp_io_buf.getvalue()
             return ""
         return result.replace(chr(0), '').replace(chr(10), '')
 
+    @staticmethod
+    def _write_python_script_to_temp_file(python_script: str) -> str:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".py",
+            prefix="maya_mcp_",
+            encoding="utf-8",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(python_script)
+            return temp_file.name
+
+    @staticmethod
+    def _temp_file_loader_script(filename: str) -> str:
+        return f"""
+_mcp_script_path = {filename!r}
+with open(_mcp_script_path, "r", encoding="utf-8") as _mcp_script_file:
+    _mcp_script_source = _mcp_script_file.read()
+try:
+    exec(compile(_mcp_script_source, _mcp_script_path, "exec"), globals(), globals())
+finally:
+    try:
+        import os as _mcp_os
+        _mcp_os.remove(_mcp_script_path)
+    except Exception:
+        pass
+"""
+
     def _send_python_command(self, python_script:str, *, wrap_python_exec:bool=False) -> Optional[str]:
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect((self.host, self.port))
@@ -102,6 +131,15 @@ _mcp_maya_results = _mcp_io_buf.getvalue()
             command = python_script
         else:
             command = MayaConnection._encode_python_to_mel_python(python_script)
+
+        max_inline_bytes = int(os.environ.get("MAYA_MCP_INLINE_COMMAND_MAX_BYTES", "6000"))
+        if len(command.encode("utf-8")) > max_inline_bytes:
+            temp_filename = MayaConnection._write_python_script_to_temp_file(python_script)
+            python_script = MayaConnection._temp_file_loader_script(temp_filename)
+            if self.source_type == "python":
+                command = python_script
+            else:
+                command = MayaConnection._encode_python_to_mel_python(python_script)
 
         client.sendall(command.encode('utf-8'))
         client.shutdown(socket.SHUT_WR)
