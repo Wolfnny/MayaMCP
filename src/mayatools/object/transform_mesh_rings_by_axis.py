@@ -10,6 +10,7 @@ def transform_mesh_rings_by_axis(
     target_tolerance: float = None,
     radius_stat: str = "mean",
     space: str = "world",
+    preserve_radius_variation: bool = False,
     select_result: bool = False,
     max_preview: int = 20,
 ) -> Dict[str, Any]:
@@ -26,10 +27,13 @@ def transform_mesh_rings_by_axis(
     - radius_offset: add to the current representative radius
     - radius_scale: multiply the current representative radius
     - axis_value: optional coordinate to move the ring to along the axis
+    - preserve_radius_variation: optional per-edit override
     - label: optional note echoed in the report
 
     Exactly one of radius, radius_offset, or radius_scale must be provided for
-    each edit.
+    each edit. With preserve_radius_variation=True, the edit changes the ring's
+    overall radius while preserving existing local dents, grooves, dimples, and
+    other radius offsets on that ring.
     """
     import math
     import maya.cmds as cmds
@@ -52,6 +56,11 @@ def transform_mesh_rings_by_axis(
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f"{arg_name} must be an integer greater than or equal to {minimum}.")
         return int(value)
+
+    def _validate_bool(value, arg_name):
+        if not isinstance(value, bool):
+            raise ValueError(f"{arg_name} must be a boolean.")
+        return value
 
     def _axis_index(axis_name):
         clean = (axis_name or "").lower().strip()
@@ -161,14 +170,26 @@ def transform_mesh_rings_by_axis(
         if len(keys) != 1:
             raise ValueError("Each ring edit must provide exactly one of radius, radius_offset, or radius_scale.")
         if keys[0] == "radius":
-            radius = _validate_scalar(edit["radius"], "radius")
+            operation_value = _validate_scalar(edit["radius"], "radius")
+            radius = operation_value
         elif keys[0] == "radius_offset":
-            radius = current_radius + _validate_scalar(edit["radius_offset"], "radius_offset")
+            operation_value = _validate_scalar(edit["radius_offset"], "radius_offset")
+            radius = current_radius + operation_value
         else:
-            radius = current_radius * _validate_scalar(edit["radius_scale"], "radius_scale")
+            operation_value = _validate_scalar(edit["radius_scale"], "radius_scale")
+            radius = current_radius * operation_value
         if radius < 0.0:
             raise ValueError("Target radius must be greater than or equal to zero.")
-        return radius
+        return radius, keys[0], operation_value
+
+    def _vertex_target_radius(current_vertex_radius, current_radius, target_radius, operation, operation_value, preserve_variation):
+        if not preserve_variation:
+            return target_radius
+        if operation == "radius_offset":
+            return max(0.0, current_vertex_radius + operation_value)
+        if operation == "radius_scale":
+            return max(0.0, current_vertex_radius * operation_value)
+        return max(0.0, current_vertex_radius + (target_radius - current_radius))
 
     if not object_name:
         raise ValueError("object_name is required.")
@@ -190,6 +211,7 @@ def transform_mesh_rings_by_axis(
     space = (space or "").lower().strip()
     if space not in {"world", "object"}:
         raise ValueError("space must be world or object.")
+    clean_preserve_radius_variation = _validate_bool(preserve_radius_variation, "preserve_radius_variation")
     max_preview = _validate_int(max_preview, "max_preview", 0)
 
     shape_name = _mesh_shape(object_name)
@@ -216,7 +238,9 @@ def transform_mesh_rings_by_axis(
         vertex_ids = group["vertex_ids"]
         radii_before = [_radius(_point_values(points[vertex_id])) for vertex_id in vertex_ids]
         current_radius = _representative_radius(radii_before)
-        target_radius = _target_radius(edit, current_radius)
+        target_radius, radius_operation, radius_operation_value = _target_radius(edit, current_radius)
+        edit_preserve_variation = edit.get("preserve_radius_variation", clean_preserve_radius_variation)
+        edit_preserve_variation = _validate_bool(edit_preserve_variation, "preserve_radius_variation")
         target_axis = edit.get("axis_value")
         if target_axis is not None:
             target_axis = _validate_scalar(target_axis, "axis_value")
@@ -226,11 +250,19 @@ def transform_mesh_rings_by_axis(
             delta_a = values[radial_axes[0]] - clean_center[radial_axes[0]]
             delta_b = values[radial_axes[1]] - clean_center[radial_axes[1]]
             current = math.sqrt(delta_a * delta_a + delta_b * delta_b)
+            vertex_target_radius = _vertex_target_radius(
+                current,
+                current_radius,
+                target_radius,
+                radius_operation,
+                radius_operation_value,
+                edit_preserve_variation,
+            )
             if current <= 1e-12:
-                values[radial_axes[0]] = clean_center[radial_axes[0]] + target_radius
+                values[radial_axes[0]] = clean_center[radial_axes[0]] + vertex_target_radius
                 values[radial_axes[1]] = clean_center[radial_axes[1]]
             else:
-                scale_factor = target_radius / current
+                scale_factor = vertex_target_radius / current
                 values[radial_axes[0]] = clean_center[radial_axes[0]] + delta_a * scale_factor
                 values[radial_axes[1]] = clean_center[radial_axes[1]] + delta_b * scale_factor
             if target_axis is not None:
@@ -248,6 +280,8 @@ def transform_mesh_rings_by_axis(
                 "vertex_count": len(vertex_ids),
                 "radius_before": current_radius,
                 "radius_after": target_radius,
+                "radius_operation": radius_operation,
+                "preserve_radius_variation": bool(edit_preserve_variation),
                 "axis_value_after": target_axis if target_axis is not None else group["axis_value"],
                 "vertex_ids_preview": vertex_ids[:max_preview],
             }
@@ -274,6 +308,7 @@ def transform_mesh_rings_by_axis(
         "space": space,
         "group_tolerance": clean_group_tolerance,
         "target_tolerance": clean_target_tolerance,
+        "preserve_radius_variation": bool(clean_preserve_radius_variation),
         "available_ring_count": len(ring_groups),
         "edited_ring_count": len(edits_report),
         "edited_vertex_count": len(unique_vertex_ids),
