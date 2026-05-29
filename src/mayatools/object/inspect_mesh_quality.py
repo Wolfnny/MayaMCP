@@ -9,6 +9,7 @@ def inspect_mesh_quality(
     edge_length_epsilon: float = 1.0e-5,
     face_aspect_threshold: float = 20.0,
     high_valence_threshold: int = 8,
+    include_boundary_as_nonmanifold: bool = False,
     select_components: bool = False,
     max_items: int = 200,
 ) -> Dict[str, Any]:
@@ -16,6 +17,7 @@ def inspect_mesh_quality(
 
     Reported issue types:
     - border_edges: boundary/open edges
+    - boundary_vertices: vertices on boundary/open edges
     - nonmanifold_edges, nonmanifold_vertices, lamina_faces
     - invalid_edges, invalid_vertices
     - triangles, ngons
@@ -26,6 +28,9 @@ def inspect_mesh_quality(
 
     Use this after component-level modeling edits to catch topology problems
     before they become shading, UV, bridge, bevel, or shrinkwrap failures.
+    By default boundary components are reported separately and filtered out of
+    Maya's raw nonmanifold edge/vertex results; set
+    include_boundary_as_nonmanifold=True to preserve raw Maya polyInfo behavior.
     """
     import re
     import maya.cmds as cmds
@@ -92,14 +97,19 @@ def inspect_mesh_quality(
             raw_components.extend(re.findall(r"\S+\.(?:e|f|vtx)\[\d+(?::\d+)?\]", line))
         return _flatten_components(raw_components)
 
-    def _issue_record(components, extra_records=None):
+    def _issue_record(components, extra_records=None, raw_components=None):
         clean_components = list(dict.fromkeys(components))
-        return {
+        record = {
             "count": len(clean_components),
             "components": clean_components[:max_items],
             "truncated": len(clean_components) > max_items,
             "records": (extra_records or [])[:max_items],
         }
+        if raw_components is not None:
+            clean_raw_components = list(dict.fromkeys(raw_components))
+            record["raw_count"] = len(clean_raw_components)
+            record["filtered_count"] = len(clean_components)
+        return record
 
     def _component(name, kind, index):
         return f"{prefix_name}.{kind}[{index}]"
@@ -123,6 +133,7 @@ def inspect_mesh_quality(
 
     all_issue_types = [
         "border_edges",
+        "boundary_vertices",
         "nonmanifold_edges",
         "nonmanifold_vertices",
         "lamina_faces",
@@ -176,18 +187,47 @@ def inspect_mesh_quality(
             )
         return edge_lengths[edge_id]
 
-    if "border_edges" in clean_issue_types:
+    def _boundary_components():
         edge_it = om.MItMeshEdge(dag_path)
-        components = []
-        records = []
+        edge_components = []
+        edge_records = []
+        vertex_to_edges = {}
         while not edge_it.isDone():
             if edge_it.onBoundary():
                 edge_id = int(edge_it.index())
+                vertex_a = int(edge_it.vertexId(0))
+                vertex_b = int(edge_it.vertexId(1))
                 faces = list(edge_it.getConnectedFaces())
-                components.append(_component(prefix_name, "e", edge_id))
-                records.append({"component": _component(prefix_name, "e", edge_id), "connected_faces": [int(face) for face in faces]})
+                edge_component = _component(prefix_name, "e", edge_id)
+                edge_components.append(edge_component)
+                edge_records.append({
+                    "component": edge_component,
+                    "vertices": [vertex_a, vertex_b],
+                    "connected_faces": [int(face) for face in faces],
+                })
+                for vertex_id in [vertex_a, vertex_b]:
+                    vertex_to_edges.setdefault(vertex_id, []).append(edge_id)
             edge_it.next()
-        issues["border_edges"] = _issue_record(components, records)
+        vertex_components = []
+        vertex_records = []
+        for vertex_id, edge_ids in sorted(vertex_to_edges.items()):
+            vertex_component = _component(prefix_name, "vtx", vertex_id)
+            vertex_components.append(vertex_component)
+            vertex_records.append({
+                "component": vertex_component,
+                "boundary_edges": [_component(prefix_name, "e", edge_id) for edge_id in sorted(edge_ids)],
+            })
+        return edge_components, edge_records, vertex_components, vertex_records
+
+    boundary_edge_components, boundary_edge_records, boundary_vertex_components, boundary_vertex_records = _boundary_components()
+    boundary_edge_set = set(boundary_edge_components)
+    boundary_vertex_set = set(boundary_vertex_components)
+
+    if "border_edges" in clean_issue_types:
+        issues["border_edges"] = _issue_record(boundary_edge_components, boundary_edge_records)
+
+    if "boundary_vertices" in clean_issue_types:
+        issues["boundary_vertices"] = _issue_record(boundary_vertex_components, boundary_vertex_records)
 
     if "short_edges" in clean_issue_types:
         edge_it = om.MItMeshEdge(dag_path)
@@ -212,7 +252,14 @@ def inspect_mesh_quality(
 
     for poly_info_type in ["nonmanifold_edges", "nonmanifold_vertices", "lamina_faces", "invalid_edges", "invalid_vertices"]:
         if poly_info_type in clean_issue_types:
-            issues[poly_info_type] = _issue_record(_poly_info_components(poly_info_type))
+            raw_components = _poly_info_components(poly_info_type)
+            components = raw_components
+            if not include_boundary_as_nonmanifold and poly_info_type == "nonmanifold_edges":
+                components = [component for component in raw_components if component not in boundary_edge_set]
+            if not include_boundary_as_nonmanifold and poly_info_type == "nonmanifold_vertices":
+                components = [component for component in raw_components if component not in boundary_vertex_set]
+            raw_for_record = raw_components if components != raw_components else None
+            issues[poly_info_type] = _issue_record(components, raw_components=raw_for_record)
 
     polygon_it = om.MItMeshPolygon(dag_path)
     triangle_components = []
@@ -336,6 +383,7 @@ def inspect_mesh_quality(
         "edge_length_epsilon": edge_length_epsilon,
         "face_aspect_threshold": face_aspect_threshold,
         "high_valence_threshold": high_valence_threshold,
+        "include_boundary_as_nonmanifold": bool(include_boundary_as_nonmanifold),
         "issue_types": clean_issue_types,
         "summary": summary,
         "issues": issues,
