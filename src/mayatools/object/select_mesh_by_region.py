@@ -21,7 +21,7 @@ def select_mesh_by_region(
     space: str = "world",
     selection_mode: str = "replace",
     select_result: bool = True,
-    use_selection: bool = True,
+    use_selection: bool = False,
     max_preview: int = 200,
 ) -> Dict[str, Any]:
     """Filter mesh vertices, edges, or faces by spatial and normal criteria.
@@ -36,6 +36,9 @@ def select_mesh_by_region(
     For the default radial_axis="y", 0 degrees points toward +Z, 90 toward +X,
     180 toward -Z, and 270 toward -X. The returned angle_convention field
     reports this basis explicitly for any radial_axis.
+
+    By default the full mesh is scanned. Set use_selection=True to constrain
+    filtering to the current object selection.
 
     This is a Maya-style component selection constraint for reliably targeting
     local bands, panels, caps, front/back regions, and normal-facing areas before
@@ -406,6 +409,8 @@ def select_mesh_by_region(
         "result_type": clean_result_type,
         "space": space,
         "sample_mode": clean_sample_mode,
+        "use_selection": bool(use_selection),
+        "input_scope": "selection" if use_selection else "object",
         "criteria": {
             "axis": axis.lower().strip() if axis else None,
             "axis_range": clean_axis_range,
