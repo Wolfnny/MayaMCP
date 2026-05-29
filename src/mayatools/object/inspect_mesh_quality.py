@@ -19,6 +19,7 @@ def inspect_mesh_quality(
     - border_edges: boundary/open edges
     - boundary_vertices: vertices on boundary/open edges
     - nonmanifold_edges, nonmanifold_vertices, lamina_faces
+    - same_direction_face_edges: paired faces traversing a shared edge in the same direction
     - invalid_edges, invalid_vertices
     - triangles, ngons
     - zero_area_faces, zero_uv_area_faces
@@ -137,6 +138,7 @@ def inspect_mesh_quality(
         "nonmanifold_edges",
         "nonmanifold_vertices",
         "lamina_faces",
+        "same_direction_face_edges",
         "invalid_edges",
         "invalid_vertices",
         "triangles",
@@ -186,6 +188,25 @@ def inspect_mesh_quality(
                 ((point_a.x - point_b.x) ** 2 + (point_a.y - point_b.y) ** 2 + (point_a.z - point_b.z) ** 2) ** 0.5
             )
         return edge_lengths[edge_id]
+
+    face_vertex_cache = {}
+
+    def _face_vertices(face_id):
+        if face_id not in face_vertex_cache:
+            face_vertex_cache[face_id] = [int(vertex_id) for vertex_id in mesh_fn.getPolygonVertices(face_id)]
+        return face_vertex_cache[face_id]
+
+    def _edge_direction_in_face(face_id, vertex_a, vertex_b):
+        vertices = _face_vertices(face_id)
+        if not vertices:
+            return None
+        for index, current_vertex in enumerate(vertices):
+            next_vertex = vertices[(index + 1) % len(vertices)]
+            if current_vertex == vertex_a and next_vertex == vertex_b:
+                return "a_to_b"
+            if current_vertex == vertex_b and next_vertex == vertex_a:
+                return "b_to_a"
+        return None
 
     def _boundary_components():
         edge_it = om.MItMeshEdge(dag_path)
@@ -244,6 +265,47 @@ def inspect_mesh_quality(
 
     if "boundary_vertices" in clean_issue_types:
         issues["boundary_vertices"] = _issue_record(boundary_vertex_components, boundary_vertex_records)
+
+    if "same_direction_face_edges" in clean_issue_types:
+        edge_it = om.MItMeshEdge(dag_path)
+        components = []
+        records = []
+        while not edge_it.isDone():
+            edge_id = int(edge_it.index())
+            connected_faces = [int(face_id) for face_id in edge_it.getConnectedFaces()]
+            if len(connected_faces) == 2:
+                vertex_a = int(edge_it.vertexId(0))
+                vertex_b = int(edge_it.vertexId(1))
+                face_directions = [
+                    {
+                        "face": face_id,
+                        "component": _component(prefix_name, "f", face_id),
+                        "direction": _edge_direction_in_face(face_id, vertex_a, vertex_b),
+                    }
+                    for face_id in connected_faces
+                ]
+                directions = [record["direction"] for record in face_directions]
+                if directions[0] is not None and directions[0] == directions[1]:
+                    component = _component(prefix_name, "e", edge_id)
+                    point_a = points[vertex_a]
+                    point_b = points[vertex_b]
+                    components.append(component)
+                    records.append(
+                        {
+                            "component": component,
+                            "vertices": [vertex_a, vertex_b],
+                            "connected_faces": connected_faces,
+                            "face_directions": face_directions,
+                            "length": _edge_length(edge_id),
+                            "center": [
+                                float((point_a.x + point_b.x) * 0.5),
+                                float((point_a.y + point_b.y) * 0.5),
+                                float((point_a.z + point_b.z) * 0.5),
+                            ],
+                        }
+                    )
+            edge_it.next()
+        issues["same_direction_face_edges"] = _issue_record(components, records)
 
     if "short_edges" in clean_issue_types:
         edge_it = om.MItMeshEdge(dag_path)
