@@ -188,7 +188,7 @@ Generated from local tool signatures and docstrings.
 
 - `audit_scene_strings` - Audit scene names, node names, texture paths, and related strings.
   Parameters: `case_sensitive`, `categories`, `include_default_nodes`, `long_names`, `max_results`, `pattern`, `preset`
-- `clear_selection_list` - Clears the user selection list of objects.
+- `clear_selection_list` - Clear the user selection list of objects.
 - `compare_image_appearance` - Compare aligned image appearance with color-error metrics.
   Parameters: `alpha_threshold`, `auto_crop_candidate`, `auto_crop_padding_pixels`, `auto_crop_reference`, `background_color`, `background_tolerance`, `band_edges_normalized`, `candidate_background_color`, `candidate_bbox_normalized`, `candidate_bbox_pixels`, `candidate_image_path`, `compare_height`, `compare_width`, `comparison_mask_mode`, `grid_columns`, `grid_rows`, `mask_mode`, `min_compare_pixels`, `output_path`, `reference_background_color`, `reference_bbox_normalized`, `reference_bbox_pixels`, `reference_image_path`
 - `compare_image_silhouettes` - Compare two image silhouettes and optionally write an overlap diagnostic.

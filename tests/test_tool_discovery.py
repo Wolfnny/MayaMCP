@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
+
 from maya_mcp.server import OperationsManager
 from maya_mcp.tool_contracts import collect_tool_contracts
+from mayatools.scene.clear_selection_list import clear_selection_list
 
 
 def test_find_tools_discovers_current_toolset() -> None:
@@ -24,6 +27,19 @@ def test_select_mesh_silhouette_schema_includes_width_filter() -> None:
     properties = tool.inputSchema["properties"]
 
     assert "min_projected_width" in properties
+
+
+def test_clear_selection_list_has_standard_return_contract() -> None:
+    manager = OperationsManager()
+    manager.find_tools()
+
+    tool = next(tool for tool in manager.get_tools() if tool.name == "clear_selection_list")
+
+    assert "Clear the user selection list" in tool.description
+    assert inspect.signature(clear_selection_list).return_annotation not in {
+        inspect.Signature.empty,
+        None,
+    }
 
 
 def test_tool_contracts_are_clean_for_current_sources() -> None:
