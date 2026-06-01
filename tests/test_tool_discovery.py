@@ -16,6 +16,16 @@ def test_find_tools_discovers_current_toolset() -> None:
     assert "results" not in tools
 
 
+def test_select_mesh_silhouette_schema_includes_width_filter() -> None:
+    manager = OperationsManager()
+    manager.find_tools()
+
+    tool = next(tool for tool in manager.get_tools() if tool.name == "select_mesh_silhouette_components")
+    properties = tool.inputSchema["properties"]
+
+    assert "min_projected_width" in properties
+
+
 def test_tool_contracts_are_clean_for_current_sources() -> None:
     report = collect_tool_contracts()
 

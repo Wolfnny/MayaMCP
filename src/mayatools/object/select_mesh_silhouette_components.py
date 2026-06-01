@@ -17,6 +17,7 @@ def select_mesh_silhouette_components(
     bin_count: int = 32,
     extreme_sides: List[str] = None,
     extreme_count: int = 1,
+    min_projected_width: float = 0.0,
     normal_dot_tolerance: float = 0.02,
     include_boundary_edges: bool = True,
     space: str = "world",
@@ -31,6 +32,8 @@ def select_mesh_silhouette_components(
       vertical bins, and select the left/right projected extremes in each bin.
       This matches the common Maya modeling workflow of checking front/side
       outline and moving the visible profile components.
+      Set min_projected_width to skip narrow bins whose left/right span is too
+      small to represent a useful silhouette side.
     - normal_edges: select edges whose adjacent face normals cross the view
       direction, optionally including border edges.
 
@@ -253,13 +256,23 @@ def select_mesh_silhouette_components(
         for bin_index, bin_records in enumerate(bins):
             if not bin_records:
                 continue
+            min_screen_x = min(record["screen_x"] for record in bin_records)
+            max_screen_x = max(record["screen_x"] for record in bin_records)
+            projected_width = max_screen_x - min_screen_x
             bin_report = {
                 "bin_index": bin_index,
                 "screen_y_min": y_range[0] + span * (bin_index / float(clean_bin_count)),
                 "screen_y_max": y_range[0] + span * ((bin_index + 1) / float(clean_bin_count)),
                 "candidate_count": len(bin_records),
+                "projected_width": float(projected_width),
+                "skipped": False,
                 "selected": [],
             }
+            if projected_width < clean_min_projected_width:
+                bin_report["skipped"] = True
+                bin_report["skip_reason"] = "projected_width_below_min_projected_width"
+                bin_reports.append(bin_report)
+                continue
             if "left" in clean_extreme_sides:
                 for record in sorted(bin_records, key=lambda item: (item["screen_x"], item["id"]))[:clean_extreme_count]:
                     selected.append(record["id"])
@@ -350,6 +363,9 @@ def select_mesh_silhouette_components(
     clean_screen_y_range = _validate_range(screen_y_range, "screen_y_range") if screen_y_range is not None else None
     clean_bin_count = _validate_int(bin_count, "bin_count", 1)
     clean_extreme_count = _validate_int(extreme_count, "extreme_count", 1)
+    clean_min_projected_width = _validate_scalar(min_projected_width, "min_projected_width")
+    if clean_min_projected_width < 0.0:
+        raise ValueError("min_projected_width must be greater than or equal to zero.")
     clean_extreme_sides = [str(item).lower().strip() for item in (extreme_sides or ["left", "right"])]
     if not clean_extreme_sides or any(item not in {"left", "right"} for item in clean_extreme_sides):
         raise ValueError("extreme_sides must contain left and/or right.")
@@ -396,6 +412,7 @@ def select_mesh_silhouette_components(
         "bin_count": clean_bin_count if clean_method == "projected_extremes" else None,
         "extreme_sides": clean_extreme_sides if clean_method == "projected_extremes" else None,
         "extreme_count": clean_extreme_count if clean_method == "projected_extremes" else None,
+        "min_projected_width": clean_min_projected_width if clean_method == "projected_extremes" else None,
         "normal_dot_tolerance": clean_normal_dot_tolerance if clean_method == "normal_edges" else None,
         "include_boundary_edges": bool(include_boundary_edges) if clean_method == "normal_edges" else None,
         "component_count": len(components),

@@ -154,7 +154,7 @@ Generated from local tool signatures and docstrings.
 - `select_mesh_rings_by_axis` - Select coordinate-clustered mesh rows or component bands along an axis.
   Parameters: `axis`, `axis_range`, `group_tolerance`, `max_groups`, `max_preview`, `min_components_per_group`, `mode`, `object_name`, `result_type`, `select_result`, `selection_mode`, `space`, `target_tolerance`, `targets`
 - `select_mesh_silhouette_components` - Select mesh components that define a view-dependent silhouette.
-  Parameters: `axis`, `axis_range`, `bin_count`, `box_max`, `box_min`, `camera_name`, `center`, `extreme_count`, `extreme_sides`, `include_boundary_edges`, `max_preview`, `method`, `normal_dot_tolerance`, `object_name`, `result_type`, `screen_y_range`, `select_result`, `selection_mode`, `space`, `up_axis`, `view_direction`
+  Parameters: `axis`, `axis_range`, `bin_count`, `box_max`, `box_min`, `camera_name`, `center`, `extreme_count`, `extreme_sides`, `include_boundary_edges`, `max_preview`, `method`, `min_projected_width`, `normal_dot_tolerance`, `object_name`, `result_type`, `screen_y_range`, `select_result`, `selection_mode`, `space`, `up_axis`, `view_direction`
 - `set_mesh_vertex_positions` - Set exact polygon mesh vertex positions.
   Parameters: `coordinate_mask`, `max_preview`, `object_name`, `select_result`, `space`, `vertex_positions`
 - `set_object_attribute` - Set an object's attribute with a specific value.
