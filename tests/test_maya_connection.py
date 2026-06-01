@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
 from maya_mcp.server import MayaConnection
@@ -45,14 +48,44 @@ def test_run_python_script_fetches_current_output_var(monkeypatch: pytest.Monkey
         calls.append((python_script, wrap_python_exec))
         if len(calls) == 1:
             return '{"success": true, "value": "stale"}'
-        return '{"success": true, "value": "fresh"}'
+        request_id = re.search(r"_mcp_maya_result_request_id = '([^']+)'", calls[0][0]).group(1)
+        return json.dumps(
+            {
+                "request_id": request_id,
+                "result": '{"success": true, "value": "fresh"}',
+            }
+        )
 
     monkeypatch.setattr(connection, "_send_python_command", fake_send)
 
     result = connection.run_python_script("pass")
 
     assert result == {"success": True, "value": "fresh"}
-    assert calls[1] == ("_mcp_maya_results", False)
+    assert "_mcp_maya_results" in calls[1][0]
+    assert "_mcp_maya_result_request_id" in calls[1][0]
+    assert calls[1][1] is False
+
+
+def test_run_python_script_ignores_stale_output_var_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = MayaConnection(host="127.0.0.1", port=50007, source_type="mel")
+    calls = []
+
+    def fake_send(python_script, *, wrap_python_exec=False):
+        calls.append((python_script, wrap_python_exec))
+        if len(calls) == 1:
+            return '{"success": true, "value": "initial"}'
+        return json.dumps(
+            {
+                "request_id": "stale-request",
+                "result": '{"success": true, "value": "stale"}',
+            }
+        )
+
+    monkeypatch.setattr(connection, "_send_python_command", fake_send)
+
+    result = connection.run_python_script("pass")
+
+    assert result == {"success": True, "value": "initial"}
 
 
 def test_connection_failure_mentions_effective_configuration() -> None:

@@ -11,6 +11,7 @@ import os
 import pprint
 import socket
 import tempfile
+import uuid
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -216,10 +217,16 @@ finally:
         *,
         returns: "MayaConnection.ScriptReturn" = ScriptReturn.JSON,
     ):
+        request_id = uuid.uuid4().hex
         if returns == MayaConnection.ScriptReturn.STDOUT:
             python_script = MayaConnection._update_script_to_capture_stdout(python_script)
         else:
             python_script = "_mcp_maya_results = None\n" + python_script
+        python_script = (
+            f"_mcp_maya_result_request_id = {request_id!r}\n"
+            f"{python_script}\n"
+            f"_mcp_maya_result_request_id = {request_id!r}\n"
+        )
 
         initial_result = self._send_python_command(python_script, wrap_python_exec=True)
         initial_result = MayaConnection._clean_command_result(initial_result)
@@ -227,8 +234,26 @@ finally:
         if returns == MayaConnection.ScriptReturn.NONE:
             return None
 
-        result = self._send_python_command("_mcp_maya_results")
+        fetch_expression = (
+            "__import__('json').dumps({"
+            "'request_id': globals().get('_mcp_maya_result_request_id'), "
+            "'result': globals().get('_mcp_maya_results')"
+            "})"
+        )
+        result = self._send_python_command(fetch_expression)
         result = MayaConnection._clean_command_result(result)
+
+        try:
+            envelope = json.loads(result) if result else {}
+        except Exception:
+            envelope = {}
+
+        if isinstance(envelope, dict) and envelope.get("request_id") == request_id:
+            result = envelope.get("result")
+            if not isinstance(result, str):
+                return result
+        else:
+            result = initial_result
 
         output_var_tokens = {"_mcp_maya_results", "'_mcp_maya_results'", '"_mcp_maya_results"'}
         if not result or result == "\n" or result in output_var_tokens:
