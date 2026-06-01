@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import inspect
 import importlib.util
 import json
@@ -24,6 +26,7 @@ from mcp.server.models import InitializationOptions
 from mcp.types import EmbeddedResource, ImageContent, TextContent, Tool
 
 from .paths import get_log_path, get_tools_directory
+from mayatools.common.results import compact_result
 
 
 __version__ = "0.2.0"
@@ -39,6 +42,7 @@ logger = logging.getLogger("MayaMCP")
 logger.addHandler(logging.NullHandler())
 
 _operation_manager: "OperationsManager | None" = None
+_KNOWN_MAYA_TOOL_CACHE_KEYS: set[tuple[str, int, str, str, str]] = set()
 
 
 def configure_logging(level: int = LoggingLevel) -> Path:
@@ -217,16 +221,18 @@ finally:
         else:
             python_script = "_mcp_maya_results = None\n" + python_script
 
-        result = self._send_python_command(python_script, wrap_python_exec=True)
-        result = MayaConnection._clean_command_result(result)
+        initial_result = self._send_python_command(python_script, wrap_python_exec=True)
+        initial_result = MayaConnection._clean_command_result(initial_result)
 
         if returns == MayaConnection.ScriptReturn.NONE:
             return None
 
+        result = self._send_python_command("_mcp_maya_results")
+        result = MayaConnection._clean_command_result(result)
+
         output_var_tokens = {"_mcp_maya_results", "'_mcp_maya_results'", '"_mcp_maya_results"'}
         if not result or result == "\n" or result in output_var_tokens:
-            result = self._send_python_command("_mcp_maya_results")
-            result = MayaConnection._clean_command_result(result)
+            result = initial_result
 
         try:
             result = json.loads(result)
@@ -234,6 +240,69 @@ finally:
             pass
 
         return result
+
+    def call_tool(self, tool_name: str, source_path: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
+        """Call a Maya tool, using Maya-side source caching when enabled."""
+        if arguments is None:
+            arguments = {}
+        if tool_cache_disabled():
+            python_script = load_maya_tool_source(tool_name, source_path, arguments)
+            return self.run_python_script(python_script)
+
+        source = Path(source_path).read_text(encoding="utf-8")
+        source_hash = tool_source_hash(source)
+        cache_key = (self.host, self.port, self.source_type, tool_name, source_hash)
+        should_register = cache_key not in _KNOWN_MAYA_TOOL_CACHE_KEYS
+        python_script = build_cached_tool_call_script(
+            tool_name=tool_name,
+            source=source,
+            source_hash=source_hash,
+            arguments=arguments,
+            include_source=should_register,
+        )
+        result = self.run_python_script(python_script)
+        if isinstance(result, dict) and result.get("_mcp_cache_miss"):
+            python_script = build_cached_tool_call_script(
+                tool_name=tool_name,
+                source=source,
+                source_hash=source_hash,
+                arguments=arguments,
+                include_source=True,
+            )
+            result = self.run_python_script(python_script)
+        if not (isinstance(result, dict) and result.get("_mcp_cache_miss")):
+            _KNOWN_MAYA_TOOL_CACHE_KEYS.add(cache_key)
+        return result
+
+    def run_cache_probe(self) -> Dict[str, Any]:
+        """Probe whether the Maya-side cache registry is writable."""
+        script = """
+import json
+try:
+    _mcp_tool_registry = globals().setdefault("_mcp_tool_registry", {})
+    _mcp_tool_cache_stats = globals().setdefault(
+        "_mcp_tool_cache_stats",
+        {"loads": 0, "hits": 0, "misses": 0, "errors": 0},
+    )
+    _mcp_tool_registry["__probe__"] = {"tool_name": "__probe__", "source_hash": "probe"}
+    del _mcp_tool_registry["__probe__"]
+    _mcp_maya_results = json.dumps({
+        "success": True,
+        "cache_writable": True,
+        "registry_size": len(_mcp_tool_registry),
+        "stats": dict(_mcp_tool_cache_stats),
+    })
+except Exception as exc:
+    _mcp_maya_results = json.dumps({
+        "success": False,
+        "cache_writable": False,
+        "message": str(exc),
+    })
+"""
+        result = self.run_python_script(script)
+        if isinstance(result, dict):
+            return result
+        return {"success": False, "message": str(result)}
 
     def run_live_probe(self) -> Dict[str, Any]:
         """Execute a read-only probe in Maya."""
@@ -306,7 +375,7 @@ class OperationsManager:
         self._paths.clear()
         self._tools.clear()
         for root, dirs, files in os.walk(self.tools_directory):
-            dirs[:] = [directory for directory in dirs if directory != "__pycache__"]
+            dirs[:] = [directory for directory in dirs if directory not in {"__pycache__", "common"}]
             for file in files:
                 if not file.endswith(".py") or file == "__init__.py":
                     continue
@@ -413,6 +482,106 @@ def load_maya_tool_source(
     return results
 
 
+def tool_cache_disabled() -> bool:
+    return os.environ.get("MAYA_MCP_DISABLE_TOOL_CACHE", "").lower().strip() in {"1", "true", "yes", "on"}
+
+
+def tool_source_hash(source: str) -> str:
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def build_cached_tool_call_script(
+    tool_name: str,
+    source: str,
+    source_hash: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    *,
+    include_source: bool = False,
+) -> str:
+    """Build a Maya script that calls a cached tool function."""
+    if arguments is None:
+        arguments = {}
+    source_b64 = base64.b64encode(source.encode("utf-8")).decode("ascii") if include_source else ""
+    arguments_json = json.dumps(arguments, ensure_ascii=True, sort_keys=True)
+    return f"""
+import base64
+import json
+import traceback
+from pprint import pprint
+
+_mcp_tool_name = {tool_name!r}
+_mcp_tool_source_hash = {source_hash!r}
+_mcp_tool_source_b64 = {source_b64!r}
+_mcp_tool_args = json.loads({arguments_json!r})
+
+_mcp_tool_registry = globals().setdefault("_mcp_tool_registry", {{}})
+_mcp_tool_cache_stats = globals().setdefault(
+    "_mcp_tool_cache_stats",
+    {{"loads": 0, "hits": 0, "misses": 0, "errors": 0}},
+)
+
+def _mcp_tool_cache_key(tool_name, source_hash):
+    return tool_name + ":" + source_hash
+
+def _mcp_register_tool(tool_name, source_hash, source_b64):
+    source = base64.b64decode(source_b64.encode("ascii")).decode("utf-8")
+    namespace = {{}}
+    exec(compile(source, "<MayaMCP:" + tool_name + ":" + source_hash + ">", "exec"), namespace, namespace)
+    fn = namespace.get(tool_name)
+    if not callable(fn):
+        raise RuntimeError("Tool source did not define callable " + tool_name)
+    _mcp_tool_registry[_mcp_tool_cache_key(tool_name, source_hash)] = {{
+        "function": fn,
+        "tool_name": tool_name,
+        "source_hash": source_hash,
+    }}
+    _mcp_tool_cache_stats["loads"] = _mcp_tool_cache_stats.get("loads", 0) + 1
+
+def _mcp_call_cached_tool(tool_name, source_hash, args):
+    key = _mcp_tool_cache_key(tool_name, source_hash)
+    entry = _mcp_tool_registry.get(key)
+    if not entry:
+        _mcp_tool_cache_stats["misses"] = _mcp_tool_cache_stats.get("misses", 0) + 1
+        return json.dumps({{
+            "success": False,
+            "message": "MayaMCP tool cache miss.",
+            "_mcp_cache_miss": True,
+            "tool": tool_name,
+            "source_hash": source_hash,
+        }})
+    _mcp_tool_cache_stats["hits"] = _mcp_tool_cache_stats.get("hits", 0) + 1
+    try:
+        results = entry["function"](**args)
+    except Exception as exc:
+        traceback.print_exc()
+        _mcp_tool_cache_stats["errors"] = _mcp_tool_cache_stats.get("errors", 0) + 1
+        results = {{
+            "success": False,
+            "message": "Error: Maya tool failed with the follow message: " + str(exc),
+        }}
+    if results and not isinstance(results, str):
+        try:
+            return json.dumps(results)
+        except Exception:
+            print("MayaMCP: Error attempting to return cached tool results as JSON")
+            pprint(results)
+            return str(results)
+    return results
+
+try:
+    if _mcp_tool_source_b64:
+        _mcp_register_tool(_mcp_tool_name, _mcp_tool_source_hash, _mcp_tool_source_b64)
+    _mcp_maya_results = _mcp_call_cached_tool(_mcp_tool_name, _mcp_tool_source_hash, _mcp_tool_args)
+except Exception as exc:
+    traceback.print_exc()
+    _mcp_tool_cache_stats["errors"] = _mcp_tool_cache_stats.get("errors", 0) + 1
+    _mcp_maya_results = json.dumps({{
+        "success": False,
+        "message": "Error: MayaMCP cached tool runtime failed: " + str(exc),
+    }})
+"""
+
+
 def convert_to_content(
     result: Any,
 ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
@@ -464,8 +633,8 @@ async def handle_call_tool(
 
     try:
         maya_conn = MayaConnection()
-        python_script = load_maya_tool_source(name, path, arguments or {})
-        results = maya_conn.run_python_script(python_script)
+        results = maya_conn.call_tool(name, path, arguments or {})
+        results = compact_result(results, prefix=name)
         converted_results = convert_to_content(results)
     except Exception as exc:
         logger.critical(exc, exc_info=True)

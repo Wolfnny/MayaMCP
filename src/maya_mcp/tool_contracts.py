@@ -14,7 +14,7 @@ from .paths import get_tools_directory
 def iter_tool_files(tools_directory: str | Path | None = None) -> Iterable[Path]:
     root = get_tools_directory(tools_directory)
     for path in sorted(root.rglob("*.py")):
-        if path.name == "__init__.py" or "__pycache__" in path.parts:
+        if path.name == "__init__.py" or "__pycache__" in path.parts or "common" in path.parts:
             continue
         yield path
 

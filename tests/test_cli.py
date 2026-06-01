@@ -53,6 +53,45 @@ def test_tools_json_smoke() -> None:
     assert "object" in payload["categories"]
 
 
+def test_tools_brief_smoke() -> None:
+    result = _run_cli("tools", "--brief", "--category", "object")
+
+    assert result.returncode == 0, result.stderr
+    assert "[object]" in result.stdout
+    assert "select_mesh_by_region" in result.stdout
+
+
+def test_tools_search_smoke() -> None:
+    result = _run_cli("tools", "search", "uv face")
+
+    assert result.returncode == 0, result.stderr
+    assert "matches" in result.stdout
+    assert "uv" in result.stdout.lower()
+
+
+def test_doctor_fix_script_smoke() -> None:
+    result = _run_cli("doctor", "--fix-script")
+
+    assert result.returncode == 0, result.stderr
+    assert 'commandPort -name ":50009"' in result.stdout
+    assert "MAYA_MCP_COMMAND_SOURCE_TYPE" in result.stdout
+
+
+def test_new_tool_dry_run_smoke() -> None:
+    result = _run_cli("new-tool", "object/example_tool", "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert "example_tool.py" in result.stdout
+    assert "Dry run only" in result.stdout
+
+
+def test_docs_tools_check_smoke() -> None:
+    result = _run_cli("docs", "tools", "--check")
+
+    assert result.returncode == 0, result.stderr
+    assert "docs\\tools.md" in result.stdout or "docs/tools.md" in result.stdout
+
+
 def test_doctor_json_reports_invalid_connection_config() -> None:
     result = _run_cli(
         "doctor",

@@ -104,8 +104,13 @@ checks:
 maya-mcp serve
 maya-mcp doctor --json
 maya-mcp doctor --live
+maya-mcp doctor --fix-script
 maya-mcp tools --json
+maya-mcp tools --brief
+maya-mcp tools search "uv face"
 maya-mcp tools --fail-on-contract
+maya-mcp new-tool object/my_tool --dry-run
+maya-mcp docs tools
 ```
 
 The existing entrypoint remains supported for older MCP client configs:
@@ -147,7 +152,8 @@ When the Maya MCP server first attempts to communicate with Maya, you will get t
 ![](docs/MayaSecurityWarning-RunScript.jpg)
 
 If the default command port is blocked by Maya security settings, open a
-dedicated Python command port in Maya and point the MCP server at it:
+dedicated Python command port in Maya and point the MCP server at it. This is
+also the recommended development setup because it avoids MEL wrapping overhead:
 
 ```mel
 commandPort -name ":50009" -sourceType "python" -bufferSize 4096 -outputVar "_mcp_maya_results";
@@ -170,23 +176,33 @@ and suggested Maya command with:
 ```shell
 maya-mcp doctor
 maya-mcp doctor --live
+maya-mcp doctor --fix-script
 ```
 
 Connection failures include the effective `host`, `port`, and `source_type`.
 `doctor --live` performs a read-only commandPort probe.
+`doctor --fix-script` prints the recommended Maya commandPort command and MCP
+environment variables for `50009/python`.
 
 
 ## Developer Notes
 
 The Maya MCP Server module was designed to be easily modified in a non-intrusive way. This is done by having the Maya Python code reside in the MCP server and sent to Maya's command port for execution. The results are sent back to the server and processed.
 
-The default Maya command port runs MEL so the Python code is modified to run within MEL function call to the Python interpreter. There is also some limits such as multi-line Python code can't have any returned results. So, each command creates two connections to Maya. First to run the operation and save the results. The second connection then to read back the results. 
+The default Maya command port runs MEL so the Python code is modified to run within MEL function call to the Python interpreter. There is also some limits such as multi-line Python code can't have any returned results. So, each command creates two connections to Maya. First to run the operation and save the results. The second connection then to read back the results.
 
 To help minimize populating the namespace in the Maya global Python interpreter, functions and variables sent to Maya will be scoped to start with _mcp_maya_*. Each of the Maya tools are scoped into a function named _mcp_maya_scope(). The results are assigned to the variable _mcp_maya_results. This way should significantly reduce the possibility of name collisions. 
 
 There is a bit of elegance to this design. You basically can just add the Python file, restart the MCP Client and Maya MCP server and go. You don't need to integrate the operations on both the Maya MCP server and Maya itself. The code you add is only Maya specific Python and doesn't need to add any MCP decorators. This is a much better design to grow and adapt to different installations instead of having a fixed set of tools.
 
-The Maya MCP server was built using the low-level Python MCP module. This was necessary to allow for dynamically defining all of the tools at run time. The tool function signatures are captured dynamically at the start of the server. 
+The Maya MCP server was built using the low-level Python MCP module. This was necessary to allow for dynamically defining all of the tools at run time. The tool function signatures are captured dynamically at the start of the server.
+
+To reduce repeated commandPort payload size, the server caches loaded tool
+functions in Maya by `tool_name + source_hash`. Set
+`MAYA_MCP_DISABLE_TOOL_CACHE=1` to force the legacy full-source call path while
+debugging. Oversized results are compacted by default and the full JSON is
+written under `.maya_mcp_artifacts/results/`; set `MAYA_MCP_RESULT_MAX_BYTES=0`
+to disable result compaction.
 
 ### Adding New Tools
 
@@ -208,6 +224,20 @@ Use the tool contract checker before committing tool changes:
 
 ```shell
 maya-mcp tools --fail-on-contract
+```
+
+Use the template generator for new tools:
+
+```shell
+maya-mcp new-tool object/my_tool
+```
+
+Use the local index and search commands to understand the available toolbox:
+
+```shell
+maya-mcp tools --brief
+maya-mcp tools search "uv face"
+maya-mcp docs tools
 ```
 
 I recommend looking at the existing Maya tools in this project as examples.

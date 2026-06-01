@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from maya_mcp.server import MayaConnection, load_maya_tool_source
+from maya_mcp.server import MayaConnection
 from maya_mcp.paths import get_tools_directory
 
 
@@ -78,33 +78,40 @@ _mcp_maya_results = json.dumps({"success": True, "cjk_node_names": cjk_node_name
         setup_result = connection.run_python_script(setup_script)
         assert setup_result["success"] is True
 
-        cjk_script = load_maya_tool_source(
+        cjk_result = connection.call_tool(
             "audit_scene_strings",
             str(tool_path),
             {"preset": "cjk", "max_results": 2000},
         )
-        cjk_result = connection.run_python_script(cjk_script)
+        mid_cache = connection.run_cache_probe()
+        second_cjk_result = connection.call_tool(
+            "audit_scene_strings",
+            str(tool_path),
+            {"preset": "cjk", "max_results": 2000},
+        )
+        after_cache = connection.run_cache_probe()
 
         assert cjk_result["success"] is False
         assert cjk_result["match_count"] > 0
+        assert second_cjk_result["match_count"] == cjk_result["match_count"]
+        assert after_cache["stats"]["loads"] == mid_cache["stats"]["loads"]
+        assert after_cache["stats"]["hits"] > mid_cache["stats"]["hits"]
         assert any(match["category"] == "file_textures" for match in cjk_result["matches"])
         assert any(match["category"] == "scene" for match in cjk_result["matches"])
         assert any(match["path_exists"] is False for match in cjk_result["matches"])
 
-        non_ascii_script = load_maya_tool_source(
+        non_ascii_result = connection.call_tool(
             "audit_scene_strings",
             str(tool_path),
             {"preset": "non_ascii", "max_results": 2000},
         )
-        non_ascii_result = connection.run_python_script(non_ascii_script)
         assert non_ascii_result["match_count"] >= cjk_result["match_count"]
 
-        custom_script = load_maya_tool_source(
+        custom_result = connection.call_tool(
             "audit_scene_strings",
             str(tool_path),
             {"preset": "custom", "pattern": "texture", "max_results": 2000},
         )
-        custom_result = connection.run_python_script(custom_script)
         assert custom_result["match_count"] >= 1
     finally:
         if original_scene:
@@ -122,3 +129,29 @@ cmds.file(new=True, force=True)
 _mcp_maya_results = json.dumps({"success": True})
 '''
         connection.run_python_script(cleanup_script)
+
+
+def test_live_tool_cache_reloads_when_source_hash_changes(tmp_path: Path) -> None:
+    _requires_live_maya()
+    connection = MayaConnection()
+    tool_path = tmp_path / "cache_probe_tool.py"
+    source_one = '''from typing import Any, Dict
+
+
+def cache_probe_tool(value: int = 1) -> Dict[str, Any]:
+    """Return a cache probe result."""
+    return {"success": True, "value": value, "version": 1}
+'''
+    source_two = source_one.replace('"version": 1', '"version": 2')
+
+    tool_path.write_text(source_one, encoding="utf-8")
+    first = connection.call_tool("cache_probe_tool", str(tool_path), {"value": 5})
+    first_cache = connection.run_cache_probe()
+
+    tool_path.write_text(source_two, encoding="utf-8")
+    second = connection.call_tool("cache_probe_tool", str(tool_path), {"value": 5})
+    second_cache = connection.run_cache_probe()
+
+    assert first["version"] == 1
+    assert second["version"] == 2
+    assert second_cache["stats"]["loads"] > first_cache["stats"]["loads"]
