@@ -31,6 +31,32 @@ def test_compact_result_writes_artifact_for_large_payload(monkeypatch, tmp_path:
     assert Path(compacted["artifact_path"]).exists()
 
 
+def test_compact_result_preserves_summary_and_artifact_fields(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAYA_MCP_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("MAYA_MCP_RESULT_MAX_BYTES", "160")
+    payload = {
+        "success": False,
+        "message": "Original validation failed.",
+        "count": 99,
+        "truncated": False,
+        "preview": {"items": ["kept"]},
+        "artifacts": {"report": "C:/tmp/report.json"},
+        "items": [{"value": "x" * 30} for _ in range(20)],
+    }
+
+    compacted = compact_result(payload, prefix="unit_test", preview_items=1)
+
+    assert compacted["success"] is False
+    assert compacted["message"] == "Original validation failed."
+    assert "compaction_message" in compacted
+    assert compacted["count"] == 99
+    assert compacted["truncated"] is True
+    assert compacted["preview"] == {"items": ["kept"]}
+    assert compacted["artifacts"] == {"report": "C:/tmp/report.json"}
+    assert compacted["items_count"] == 20
+    assert len(compacted["items_preview"]) == 1
+
+
 def test_compact_result_can_be_disabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MAYA_MCP_ARTIFACT_DIR", str(tmp_path))
     monkeypatch.setenv("MAYA_MCP_RESULT_MAX_BYTES", "0")

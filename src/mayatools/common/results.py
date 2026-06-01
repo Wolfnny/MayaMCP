@@ -76,17 +76,29 @@ def _compact_dict(value: Dict[str, Any], artifact_path: str, original_size: int,
         if key in compacted:
             continue
         if isinstance(item, (str, int, float, bool)) or item is None:
-            if key.endswith("_count") or key in {"count", "match_count", "scanned_count", "changed_count"}:
+            if (
+                key.endswith("_count")
+                or key in {"count", "match_count", "scanned_count", "changed_count", "truncated"}
+                or key.endswith("_path")
+                or key.endswith("_url")
+            ):
                 compacted[key] = item
         elif isinstance(item, list):
             compacted[f"{key}_count"] = len(item)
             compacted[f"{key}_preview"] = item[:preview_items]
             compacted[f"{key}_truncated"] = len(item) > preview_items
+        elif isinstance(item, dict) and key in {"preview", "artifact", "artifacts"}:
+            compacted[key] = item
 
     compacted["success"] = value.get("success", compacted.get("success", True))
-    compacted["message"] = (
-        f"Result exceeded MAYA_MCP_RESULT_MAX_BYTES; full JSON written to {artifact_path}."
-    )
+    if "message" in compacted:
+        compacted["compaction_message"] = (
+            f"Result exceeded MAYA_MCP_RESULT_MAX_BYTES; full JSON written to {artifact_path}."
+        )
+    else:
+        compacted["message"] = (
+            f"Result exceeded MAYA_MCP_RESULT_MAX_BYTES; full JSON written to {artifact_path}."
+        )
     compacted["truncated"] = True
     compacted["compacted"] = True
     compacted["original_size_bytes"] = original_size
