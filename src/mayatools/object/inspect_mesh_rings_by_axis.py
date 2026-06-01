@@ -199,6 +199,7 @@ def inspect_mesh_rings_by_axis(
             selected = []
             selected_indices = set()
             target_reports = []
+            matches_by_group = {}
             for target in clean_targets:
                 nearest = min(groups, key=lambda item: (abs(item["axis_value"] - target), item["axis_value"]))
                 distance = abs(nearest["axis_value"] - target)
@@ -206,14 +207,23 @@ def inspect_mesh_rings_by_axis(
                     target_reports.append({"target": target, "matched": False, "nearest_axis_value": nearest["axis_value"], "distance": distance})
                     continue
                 target_reports.append({"target": target, "matched": True, "group_index": nearest["group_index"], "axis_value": nearest["axis_value"], "distance": distance})
+                matches_by_group.setdefault(nearest["group_index"], []).append({"target": target, "distance": distance})
                 if nearest["group_index"] not in selected_indices:
                     selected.append(nearest)
                     selected_indices.add(nearest["group_index"])
-            return selected[:clean_max_groups], target_reports
+            annotated = []
+            for group in selected[:clean_max_groups]:
+                result = dict(group)
+                matches = matches_by_group.get(group["group_index"], [])
+                result["matched_targets"] = [match["target"] for match in matches]
+                result["target_distances"] = matches
+                annotated.append(result)
+            return annotated, target_reports
 
         selected = []
         selected_indices = set()
         target_reports = []
+        matches_by_group = {}
         tolerance = clean_target_tolerance
         if tolerance is None:
             raise ValueError("target_tolerance must be provided when mode is within.")
@@ -228,12 +238,22 @@ def inspect_mesh_rings_by_axis(
                 }
             )
             for group in matched:
+                matches_by_group.setdefault(group["group_index"], []).append(
+                    {"target": target, "distance": abs(group["axis_value"] - target)}
+                )
                 if group["group_index"] in selected_indices:
                     continue
                 selected.append(group)
                 selected_indices.add(group["group_index"])
         selected.sort(key=lambda item: item["axis_value"])
-        return selected[:clean_max_groups], target_reports
+        annotated = []
+        for group in selected[:clean_max_groups]:
+            result = dict(group)
+            matches = matches_by_group.get(group["group_index"], [])
+            result["matched_targets"] = [match["target"] for match in matches]
+            result["target_distances"] = matches
+            annotated.append(result)
+        return annotated, target_reports
 
     if not object_name:
         raise ValueError("object_name is required.")

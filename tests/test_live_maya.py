@@ -213,3 +213,60 @@ _mcp_maya_results = json.dumps({"success": True})
             assert actual == pytest.approx(expected, abs=1.0e-6)
     finally:
         connection.run_python_script(cleanup_script)
+
+
+def test_live_inspect_mesh_rings_reports_matched_targets() -> None:
+    _requires_live_maya()
+    connection = MayaConnection()
+    setup_script = r'''
+import json
+import maya.cmds as cmds
+was_modified = bool(cmds.file(query=True, modified=True))
+try:
+    cmds.delete("mcp_ring_live_tmp")
+except Exception:
+    pass
+mesh = cmds.polyCube(name="mcp_ring_live_tmp", width=1.0, height=1.0, depth=1.0)[0]
+_mcp_maya_results = json.dumps({"success": True, "mesh": mesh, "was_modified": was_modified})
+'''
+    cleanup_template = r'''
+import json
+import maya.cmds as cmds
+try:
+    cmds.delete("mcp_ring_live_tmp")
+except Exception:
+    pass
+if not {was_modified!r}:
+    try:
+        cmds.file(modified=False)
+    except Exception:
+        pass
+_mcp_maya_results = json.dumps({{"success": True}})
+'''
+    tool_path = Path(get_tools_directory()) / "object" / "inspect_mesh_rings_by_axis.py"
+    setup = connection.run_python_script(setup_script)
+    try:
+        assert setup["success"] is True
+        result = connection.call_tool(
+            "inspect_mesh_rings_by_axis",
+            str(tool_path),
+            {
+                "object_name": setup["mesh"],
+                "axis": "y",
+                "mode": "nearest",
+                "targets": [-0.49, 0.49],
+                "group_tolerance": 0.001,
+                "min_components_per_group": 4,
+                "include_components": False,
+                "max_preview": 0,
+            },
+        )
+
+        assert result["success"] is True
+        assert result["returned_group_count"] == 2
+        for group in result["groups"]:
+            assert group["matched_targets"]
+            assert group["target_distances"]
+            assert group["target_distances"][0]["distance"] == pytest.approx(0.01, abs=1.0e-6)
+    finally:
+        connection.run_python_script(cleanup_template.format(was_modified=setup.get("was_modified", True)))
