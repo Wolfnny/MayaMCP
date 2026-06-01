@@ -29,6 +29,18 @@ def test_select_mesh_silhouette_schema_includes_width_filter() -> None:
     assert "min_projected_width" in properties
 
 
+def test_compare_image_silhouettes_schema_includes_row_sample_filters() -> None:
+    manager = OperationsManager()
+    manager.find_tools()
+
+    tool = next(tool for tool in manager.get_tools() if tool.name == "compare_image_silhouettes")
+    properties = tool.inputSchema["properties"]
+
+    assert "row_sample_sort" in properties
+    assert "row_sample_min_abs_error" in properties
+    assert "max_row_samples" in properties
+
+
 def test_clear_selection_list_has_standard_return_contract() -> None:
     manager = OperationsManager()
     manager.find_tools()

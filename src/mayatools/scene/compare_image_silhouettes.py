@@ -41,6 +41,9 @@ def compare_image_silhouettes(
     scale_range: List[float] = None,
     summary_only: bool = False,
     include_row_samples: bool = True,
+    row_sample_sort: str = "image_order",
+    row_sample_min_abs_error: float = 0.0,
+    max_row_samples: int = 0,
     include_correction_profile_samples: bool = True,
 ) -> Dict[str, Any]:
     """Compare two image silhouettes and optionally write an overlap diagnostic.
@@ -66,6 +69,8 @@ def compare_image_silhouettes(
     correction_profile_samples, and scale_range are convenience aliases for
     the normalized band/profile arguments. Set summary_only or disable sample
     blocks when running frequent QA passes where aggregate metrics are enough.
+    row_sample_sort, row_sample_min_abs_error, and max_row_samples can return
+    only the most useful row diagnostics for component-level modeling passes.
     """
     import math
     import os
@@ -627,6 +632,13 @@ def compare_image_silhouettes(
 
     summary_only = _validate_bool(summary_only, "summary_only")
     include_row_samples = _validate_bool(include_row_samples, "include_row_samples")
+    row_sample_sort = row_sample_sort.lower().strip()
+    if row_sample_sort not in {"image_order", "abs_error_desc"}:
+        raise ValueError("row_sample_sort must be one of image_order or abs_error_desc.")
+    row_sample_min_abs_error = _validate_scalar(row_sample_min_abs_error, "row_sample_min_abs_error")
+    if row_sample_min_abs_error < 0.0:
+        raise ValueError("row_sample_min_abs_error must be greater than or equal to zero.")
+    max_row_samples = _validate_int(max_row_samples, "max_row_samples", 0)
     include_correction_profile_samples = _validate_bool(
         include_correction_profile_samples,
         "include_correction_profile_samples",
@@ -768,6 +780,24 @@ def compare_image_silhouettes(
     precision = intersection / float(candidate_count) if candidate_count else 0.0
     recall = intersection / float(reference_count) if reference_count else 0.0
     width_metrics = _row_width_errors(reference_mask, candidate_mask)
+    row_samples = width_metrics["samples"]
+    returned_row_samples = []
+    row_width_samples_omitted = len(row_samples)
+    if include_row_samples:
+        returned_row_samples = row_samples
+        if row_sample_min_abs_error > 0.0:
+            returned_row_samples = [
+                sample for sample in returned_row_samples
+                if sample["abs_error"] >= row_sample_min_abs_error
+            ]
+        if row_sample_sort == "abs_error_desc":
+            returned_row_samples = sorted(
+                returned_row_samples,
+                key=lambda sample: (-sample["abs_error"], sample["row_normalized"]),
+            )
+        if max_row_samples > 0:
+            returned_row_samples = returned_row_samples[:max_row_samples]
+        row_width_samples_omitted = len(row_samples) - len(returned_row_samples)
     band_metrics = _band_width_errors(reference_mask, candidate_mask, clean_band_edges) if clean_band_edges else []
     correction_profile = _width_correction_profile(
         reference_mask,
@@ -851,8 +881,11 @@ def compare_image_silhouettes(
         "mean_abs_width_error": width_metrics["mean_abs_width_error"],
         "max_abs_width_error": width_metrics["max_abs_width_error"],
         "mean_signed_width_error": width_metrics["mean_signed_width_error"],
-        "row_width_samples": width_metrics["samples"] if include_row_samples else [],
-        "row_width_samples_omitted": 0 if include_row_samples else len(width_metrics["samples"]),
+        "row_sample_sort": row_sample_sort,
+        "row_sample_min_abs_error": row_sample_min_abs_error,
+        "max_row_samples": max_row_samples,
+        "row_width_samples": returned_row_samples,
+        "row_width_samples_omitted": row_width_samples_omitted,
         "band_width_metrics": band_metrics,
         "correction_profile": correction_profile,
     }
