@@ -167,6 +167,8 @@ Generated from local tool signatures and docstrings.
   Parameters: `component_type`, `components`, `fallback_to_closest`, `indices`, `max_distance`, `max_preview`, `object_name`, `offset`, `offset_direction`, `projection_mode`, `ray_both_directions`, `ray_direction`, `space`, `target_object_name`, `use_selection`
 - `soft_transform_mesh_components` - Apply soft-selection style transforms around resolved mesh components.
   Parameters: `affect_all_vertices`, `axis`, `center`, `center_mode`, `component_type`, `components`, `falloff_curve`, `falloff_mode`, `falloff_radius`, `indices`, `max_preview`, `object_name`, `offset`, `operation`, `pivot`, `pivot_mode`, `preserve_boundary`, `radius_mode`, `rotation`, `scale`, `select_result`, `space`, `strength`, `topology_depth`, `use_selection`, `value`, `vector`
+- `split_mesh_edges` - Split selected polygon edges and optionally place new vertices at exact ratios or coordinates.
+  Parameters: `axis`, `component_type`, `components`, `connect_new_vertices`, `construction_history`, `filter_to_spanning_edges`, `indices`, `max_preview`, `object_name`, `position_mode`, `ratio`, `ratios`, `select_result`, `space`, `split_count`, `target_value`, `use_selection`
 - `symmetrize_mesh_components` - Mirror or symmetrize selected polygon mesh components by vertex pairs.
   Parameters: `axis`, `center`, `center_mode`, `component_type`, `components`, `direction`, `indices`, `max_preview`, `object_name`, `operation`, `select_result`, `snap_center_vertices`, `space`, `tolerance`, `unique_pairs`, `use_selection`
 - `transform_mesh_components` - Transform selected polygon components by editing mesh vertices.

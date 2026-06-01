@@ -155,3 +155,61 @@ def cache_probe_tool(value: int = 1) -> Dict[str, Any]:
     assert first["version"] == 1
     assert second["version"] == 2
     assert second_cache["stats"]["loads"] > first_cache["stats"]["loads"]
+
+
+def test_live_split_mesh_edges_places_ratio_vertex() -> None:
+    _requires_live_maya()
+    connection = MayaConnection()
+    setup_script = r'''
+import json
+import re
+import maya.cmds as cmds
+try:
+    cmds.delete("mcp_split_live_tmp")
+except Exception:
+    pass
+mesh = cmds.polyCreateFacet(
+    name="mcp_split_live_tmp",
+    point=[(-1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)],
+)[0]
+line = (cmds.polyInfo(mesh + ".e[0]", edgeToVertex=True) or [""])[0]
+ids = [int(value) for value in re.findall(r"\d+", line)][1:]
+points = [cmds.xform(mesh + ".vtx[%d]" % index, query=True, worldSpace=True, translation=True) for index in ids]
+expected = [points[0][i] + (points[1][i] - points[0][i]) * 0.25 for i in range(3)]
+_mcp_maya_results = json.dumps({"success": True, "mesh": mesh, "expected": expected})
+'''
+    cleanup_script = r'''
+import json
+import maya.cmds as cmds
+try:
+    cmds.delete("mcp_split_live_tmp")
+except Exception:
+    pass
+_mcp_maya_results = json.dumps({"success": True})
+'''
+    tool_path = Path(get_tools_directory()) / "object" / "split_mesh_edges.py"
+    try:
+        setup = connection.run_python_script(setup_script)
+        assert setup["success"] is True
+
+        result = connection.call_tool(
+            "split_mesh_edges",
+            str(tool_path),
+            {
+                "object_name": setup["mesh"],
+                "indices": [0],
+                "position_mode": "ratio",
+                "ratio": 0.25,
+                "select_result": True,
+            },
+        )
+
+        assert result["success"] is True
+        assert result["new_vertex_count"] == 1
+        assert result["ngon_count_after"] >= result["ngon_count_before"]
+        assert result["new_ngon_count_delta"] == 1
+        edited = result["edited_vertices_preview"][0]
+        for actual, expected in zip(edited["after"], setup["expected"]):
+            assert actual == pytest.approx(expected, abs=1.0e-6)
+    finally:
+        connection.run_python_script(cleanup_script)

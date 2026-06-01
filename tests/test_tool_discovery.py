@@ -16,6 +16,7 @@ def test_find_tools_discovers_current_toolset() -> None:
     assert "audit_scene_strings" in tools
     assert "setup_turntable_preview_scene" in tools
     assert "select_mesh_by_region" in tools
+    assert "split_mesh_edges" in tools
     assert "results" not in tools
 
 
