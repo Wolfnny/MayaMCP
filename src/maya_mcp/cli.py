@@ -146,6 +146,10 @@ def build_doctor_report(live: bool = False) -> Dict[str, Any]:
                 "skipped": False,
                 "probe": live_probe,
                 "cache_probe": cache_probe,
+                "command_port_executable": bool(live_probe.get("success")),
+                "cache_writable": bool(cache_probe.get("success") and cache_probe.get("cache_writable")),
+                "effective_source_type": connection.source_type,
+                "recommended_source_type": "python",
             }
             report["success"] = bool(report["success"] and live_probe.get("success") and cache_probe.get("success"))
         except Exception as exc:
@@ -178,6 +182,16 @@ def _print_doctor_human(report: Dict[str, Any]) -> None:
     print(f"  Log path: {report['artifacts']['log_path']}")
     if report["live"]["requested"]:
         print(f"  Live probe: {'ok' if report['live']['success'] else 'fail'}")
+        print(
+            "  Live commandPort executable: "
+            f"{'ok' if report['live'].get('command_port_executable') else 'fail'}"
+        )
+        print(f"  Live cache writable: {'ok' if report['live'].get('cache_writable') else 'fail'}")
+        print(
+            "  Effective source type: "
+            f"{report['live'].get('effective_source_type')} "
+            f"(recommended: {report['live'].get('recommended_source_type', 'python')})"
+        )
         if not report["live"]["success"]:
             print(f"  Live message: {report['live'].get('message', '')}")
     else:

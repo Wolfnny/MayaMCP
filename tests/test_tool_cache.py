@@ -3,7 +3,12 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from maya_mcp.server import MayaConnection, build_cached_tool_call_script, tool_source_hash
+from maya_mcp.server import (
+    MayaConnection,
+    _KNOWN_MAYA_TOOL_CACHE_KEYS,
+    build_cached_tool_call_script,
+    tool_source_hash,
+)
 
 
 TOOL_SOURCE = '''from typing import Any, Dict
@@ -65,3 +70,28 @@ def test_call_tool_can_disable_cache(monkeypatch, tmp_path: Path) -> None:
     assert result == {"success": True}
     assert "def _mcp_maya_scope" in sent_scripts[0]
     assert "def sample_tool" in sent_scripts[0]
+
+
+def test_call_tool_reuses_lightweight_cached_call(monkeypatch, tmp_path: Path) -> None:
+    tool_path = tmp_path / "sample_tool.py"
+    tool_path.write_text(TOOL_SOURCE, encoding="utf-8")
+    sent_scripts = []
+
+    def fake_run(self, python_script):
+        sent_scripts.append(python_script)
+        return {"success": True}
+
+    _KNOWN_MAYA_TOOL_CACHE_KEYS.clear()
+    monkeypatch.delenv("MAYA_MCP_DISABLE_TOOL_CACHE", raising=False)
+    monkeypatch.setattr(MayaConnection, "run_python_script", fake_run)
+
+    connection = MayaConnection()
+    first = connection.call_tool("sample_tool", str(tool_path), {"value": 3})
+    second = connection.call_tool("sample_tool", str(tool_path), {"value": 4})
+
+    encoded_source = base64.b64encode(TOOL_SOURCE.encode("utf-8")).decode("ascii")
+    assert first == {"success": True}
+    assert second == {"success": True}
+    assert encoded_source in sent_scripts[0]
+    assert encoded_source not in sent_scripts[1]
+    assert "_mcp_tool_source_b64 = ''" in sent_scripts[1]
