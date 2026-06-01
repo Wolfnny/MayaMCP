@@ -1,5 +1,8 @@
 .DS_Store
 
+# MayaMCP generated diagnostics, previews, reports, and logs
+.maya_mcp_artifacts/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

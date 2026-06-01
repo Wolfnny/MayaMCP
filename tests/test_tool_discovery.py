@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+from maya_mcp.server import OperationsManager
+from maya_mcp.tool_contracts import collect_tool_contracts
+
+
+def test_find_tools_discovers_current_toolset() -> None:
+    manager = OperationsManager()
+    manager.find_tools()
+
+    tools = {tool.name for tool in manager.get_tools()}
+    assert len(tools) >= 100
+    assert "audit_scene_strings" in tools
+    assert "setup_turntable_preview_scene" in tools
+    assert "select_mesh_by_region" in tools
+
+
+def test_tool_contracts_are_clean_for_current_sources() -> None:
+    report = collect_tool_contracts()
+
+    assert report["tool_count"] >= 100
+    assert report["success"], report["issues"]
+    assert report["issue_count"] == 0

@@ -85,9 +85,34 @@ MCP requires Python 3.10 or greater. Currently using pip as the package requirem
 3. activate the virtual environment
    * Windows: ```.venv\Scripts\activate.bat```
    * Mac/Linux: ```source .venv\bin\activate.sh```
-4. ```pip install -r requirements.txt```
+4. ```pip install -e .```
 
 As stated, there is nothing to install for Maya.
+
+For local development and tests, install the dev extra:
+
+```shell
+pip install -e ".[dev]"
+```
+
+### Command Line Tools
+
+MayaMCP includes a small CLI for server startup, diagnostics, and tool contract
+checks:
+
+```shell
+maya-mcp serve
+maya-mcp doctor --json
+maya-mcp doctor --live
+maya-mcp tools --json
+maya-mcp tools --fail-on-contract
+```
+
+The existing entrypoint remains supported for older MCP client configs:
+
+```shell
+python src/maya_mcp_server.py
+```
 
 ### MCP Client Configuration
 
@@ -139,6 +164,17 @@ Then set these environment variables for the MCP server process:
 }
 ```
 
+You can inspect the effective host, port, source type, tool discovery state,
+and suggested Maya command with:
+
+```shell
+maya-mcp doctor
+maya-mcp doctor --live
+```
+
+Connection failures include the effective `host`, `port`, and `source_type`.
+`doctor --live` performs a read-only commandPort probe.
+
 
 ## Developer Notes
 
@@ -162,14 +198,39 @@ It is easy to add new tools to Maya MCP. You don't need to change any of the exi
 * When your function is sent to Maya, it will be scoped within am _mcp_maya_scope function. This provides a number of benefits. The functions sent to Maya will not polute the Python global space too much running in Maya. Plus, any exceptions thrown will be caught and returned back to the MCP Client as errors.
 * Generally, you want to return either a list or dictionary or throw an exception when there is an error.
 * Name your function and arguments appropriately so the LLM can understand the operation. Include a function doc string.
-* Default arguments are good. 
+* Default arguments are good.
 * Error checking is good so error messages can provide better failed explanations.
+* Import Maya modules such as `maya.cmds` inside the tool function, not at module top level.
+* Annotate every tool argument so MCP schemas can be generated reliably.
+* Prefer dictionary results with `success`, `message`, count fields, `truncated` flags when applicable, and artifact path fields for generated files.
+
+Use the tool contract checker before committing tool changes:
+
+```shell
+maya-mcp tools --fail-on-contract
+```
 
 I recommend looking at the existing Maya tools in this project as examples.
 
 ## Testing
 
 Currently Maya MCP has only been tested on Windows. Should work on both Linux and Mac as everything is using standard Python.
+
+Static tests do not require Maya:
+
+```shell
+python -m pytest
+```
+
+Live Maya tests are opt-in because they require a running Maya commandPort:
+
+```shell
+MAYA_MCP_LIVE=1 python -m pytest -m live_maya
+```
+
+Generated previews, reports, diagnostics, and logs should be written under
+`.maya_mcp_artifacts/` by default. Override this with `MAYA_MCP_ARTIFACT_DIR`.
+Override the server log path directly with `MAYA_MCP_LOG_PATH`.
 
 ## Future Ideas
 
