@@ -44,6 +44,8 @@ logger.addHandler(logging.NullHandler())
 
 _operation_manager: "OperationsManager | None" = None
 _KNOWN_MAYA_TOOL_CACHE_KEYS: set[tuple[str, int, str, str, str]] = set()
+_KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS: set[tuple[str, int, str, str]] = set()
+RESIDENT_EXECUTOR_VERSION = "2026-06-03.1"
 
 
 def configure_logging(level: int = LoggingLevel) -> Path:
@@ -267,7 +269,7 @@ finally:
         return result
 
     def call_tool(self, tool_name: str, source_path: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
-        """Call a Maya tool, using Maya-side source caching when enabled."""
+        """Call a Maya tool, using the Maya-side resident executor when enabled."""
         if arguments is None:
             arguments = {}
         if tool_cache_disabled():
@@ -277,8 +279,10 @@ finally:
         source = Path(source_path).read_text(encoding="utf-8")
         source_hash = tool_source_hash(source)
         cache_key = (self.host, self.port, self.source_type, tool_name, source_hash)
+        resident_key = (self.host, self.port, self.source_type, RESIDENT_EXECUTOR_VERSION)
+        self.ensure_resident_executor()
         should_register = cache_key not in _KNOWN_MAYA_TOOL_CACHE_KEYS
-        python_script = build_cached_tool_call_script(
+        python_script = build_resident_tool_call_script(
             tool_name=tool_name,
             source=source,
             source_hash=source_hash,
@@ -286,8 +290,20 @@ finally:
             include_source=should_register,
         )
         result = self.run_python_script(python_script)
+        if isinstance(result, dict) and result.get("_mcp_resident_missing"):
+            _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.discard(resident_key)
+            self.ensure_resident_executor()
+            result = self.run_python_script(
+                build_resident_tool_call_script(
+                    tool_name=tool_name,
+                    source=source,
+                    source_hash=source_hash,
+                    arguments=arguments,
+                    include_source=True,
+                )
+            )
         if isinstance(result, dict) and result.get("_mcp_cache_miss"):
-            python_script = build_cached_tool_call_script(
+            python_script = build_resident_tool_call_script(
                 tool_name=tool_name,
                 source=source,
                 source_hash=source_hash,
@@ -299,8 +315,28 @@ finally:
             _KNOWN_MAYA_TOOL_CACHE_KEYS.add(cache_key)
         return result
 
+    def ensure_resident_executor(self) -> Dict[str, Any]:
+        """Install the resident Maya executor once per commandPort session."""
+        key = (self.host, self.port, self.source_type, RESIDENT_EXECUTOR_VERSION)
+        if key in _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS:
+            return {"success": True, "resident_cached_client_side": True}
+        result = self.run_python_script(build_resident_executor_install_script())
+        if not isinstance(result, dict) or not result.get("success"):
+            raise RuntimeError(f"Failed to install MayaMCP resident executor: {result}")
+        if result.get("version") != RESIDENT_EXECUTOR_VERSION:
+            raise RuntimeError(
+                "MayaMCP resident executor version mismatch: "
+                f"expected {RESIDENT_EXECUTOR_VERSION}, got {result.get('version')}"
+            )
+        _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.add(key)
+        return result
+
     def run_cache_probe(self) -> Dict[str, Any]:
         """Probe whether the Maya-side cache registry is writable."""
+        try:
+            self.ensure_resident_executor()
+        except Exception as exc:
+            return {"success": False, "cache_writable": False, "message": str(exc)}
         script = """
 import json
 try:
@@ -316,6 +352,7 @@ try:
         "cache_writable": True,
         "registry_size": len(_mcp_tool_registry),
         "stats": dict(_mcp_tool_cache_stats),
+        "resident_version": globals().get("_mcp_resident_executor_version"),
     })
 except Exception as exc:
     _mcp_maya_results = json.dumps({
@@ -513,6 +550,190 @@ def tool_cache_disabled() -> bool:
 
 def tool_source_hash(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def build_resident_executor_install_script() -> str:
+    """Build a script that installs the Maya-side resident tool executor."""
+    return f"""
+import base64
+import json
+import traceback
+from pprint import pprint
+
+_mcp_resident_executor_version = {RESIDENT_EXECUTOR_VERSION!r}
+_mcp_tool_registry = globals().setdefault("_mcp_tool_registry", {{}})
+_mcp_tool_cache_stats = globals().setdefault(
+    "_mcp_tool_cache_stats",
+    {{"loads": 0, "hits": 0, "misses": 0, "errors": 0, "scene_invalidations": 0}},
+)
+
+def _mcp_invalidate_tool_cache_for_scene_change(*args):
+    registry = globals().setdefault("_mcp_tool_registry", {{}})
+    registry.clear()
+    stats = globals().setdefault(
+        "_mcp_tool_cache_stats",
+        {{"loads": 0, "hits": 0, "misses": 0, "errors": 0, "scene_invalidations": 0}},
+    )
+    stats["scene_invalidations"] = stats.get("scene_invalidations", 0) + 1
+
+def _mcp_ensure_scene_cache_invalidation_jobs():
+    callbacks = globals().get("_mcp_tool_cache_scene_callbacks")
+    if not callbacks:
+        try:
+            import maya.api.OpenMaya as om
+
+            callback_ids = []
+            for message in (
+                om.MSceneMessage.kBeforeOpen,
+                om.MSceneMessage.kAfterOpen,
+                om.MSceneMessage.kBeforeNew,
+                om.MSceneMessage.kAfterNew,
+            ):
+                try:
+                    callback_ids.append(
+                        om.MSceneMessage.addCallback(
+                            message,
+                            _mcp_invalidate_tool_cache_for_scene_change,
+                        )
+                    )
+                except Exception:
+                    pass
+            globals()["_mcp_tool_cache_scene_callbacks"] = callback_ids
+        except Exception:
+            globals()["_mcp_tool_cache_scene_callbacks"] = []
+
+    jobs = globals().get("_mcp_tool_cache_scene_jobs")
+    if jobs:
+        return
+    try:
+        import maya.cmds as cmds
+    except Exception:
+        globals()["_mcp_tool_cache_scene_jobs"] = []
+        return
+    created_jobs = []
+    for event_name in ("SceneOpened", "NewSceneOpened"):
+        try:
+            job_id = cmds.scriptJob(
+                event=[event_name, _mcp_invalidate_tool_cache_for_scene_change],
+                protected=True,
+            )
+            created_jobs.append(job_id)
+        except Exception:
+            pass
+    globals()["_mcp_tool_cache_scene_jobs"] = created_jobs
+
+def _mcp_tool_cache_key(tool_name, source_hash):
+    return tool_name + ":" + source_hash
+
+def _mcp_register_tool(tool_name, source_hash, source_b64):
+    source = base64.b64decode(source_b64.encode("ascii")).decode("utf-8")
+    namespace = {{}}
+    exec(compile(source, "<MayaMCP:" + tool_name + ":" + source_hash + ">", "exec"), namespace, namespace)
+    fn = namespace.get(tool_name)
+    if not callable(fn):
+        raise RuntimeError("Tool source did not define callable " + tool_name)
+    _mcp_tool_registry[_mcp_tool_cache_key(tool_name, source_hash)] = {{
+        "function": fn,
+        "tool_name": tool_name,
+        "source_hash": source_hash,
+    }}
+    _mcp_tool_cache_stats["loads"] = _mcp_tool_cache_stats.get("loads", 0) + 1
+
+def _mcp_call_cached_tool(tool_name, source_hash, args):
+    key = _mcp_tool_cache_key(tool_name, source_hash)
+    entry = _mcp_tool_registry.get(key)
+    if not entry:
+        _mcp_tool_cache_stats["misses"] = _mcp_tool_cache_stats.get("misses", 0) + 1
+        return json.dumps({{
+            "success": False,
+            "message": "MayaMCP tool cache miss.",
+            "_mcp_cache_miss": True,
+            "tool": tool_name,
+            "source_hash": source_hash,
+        }})
+    _mcp_tool_cache_stats["hits"] = _mcp_tool_cache_stats.get("hits", 0) + 1
+    try:
+        results = entry["function"](**args)
+    except Exception as exc:
+        traceback.print_exc()
+        _mcp_tool_cache_stats["errors"] = _mcp_tool_cache_stats.get("errors", 0) + 1
+        results = {{
+            "success": False,
+            "message": "Error: Maya tool failed with the follow message: " + str(exc),
+        }}
+    if results and not isinstance(results, str):
+        try:
+            return json.dumps(results)
+        except Exception:
+            print("MayaMCP: Error attempting to return resident tool results as JSON")
+            pprint(results)
+            return str(results)
+    return results
+
+def _mcp_call_resident_tool(tool_name, source_hash, source_b64, args_json):
+    _mcp_ensure_scene_cache_invalidation_jobs()
+    args = json.loads(args_json)
+    if source_b64:
+        _mcp_register_tool(tool_name, source_hash, source_b64)
+    return _mcp_call_cached_tool(tool_name, source_hash, args)
+
+_mcp_ensure_scene_cache_invalidation_jobs()
+_mcp_maya_results = json.dumps({{
+    "success": True,
+    "resident_executor": True,
+    "version": _mcp_resident_executor_version,
+    "registry_size": len(_mcp_tool_registry),
+    "stats": dict(_mcp_tool_cache_stats),
+}})
+"""
+
+
+def build_resident_tool_call_script(
+    tool_name: str,
+    source: str,
+    source_hash: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    *,
+    include_source: bool = False,
+) -> str:
+    """Build a lightweight script that calls the resident Maya executor."""
+    if arguments is None:
+        arguments = {}
+    source_b64 = base64.b64encode(source.encode("utf-8")).decode("ascii") if include_source else ""
+    arguments_json = json.dumps(arguments, ensure_ascii=True, sort_keys=True)
+    return f"""
+import json
+import traceback
+
+_mcp_tool_name = {tool_name!r}
+_mcp_tool_source_hash = {source_hash!r}
+_mcp_tool_source_b64 = {source_b64!r}
+_mcp_tool_args_json = {arguments_json!r}
+
+try:
+    _mcp_maya_results = _mcp_call_resident_tool(
+        _mcp_tool_name,
+        _mcp_tool_source_hash,
+        _mcp_tool_source_b64,
+        _mcp_tool_args_json,
+    )
+except NameError as exc:
+    _mcp_maya_results = json.dumps({{
+        "success": False,
+        "message": "MayaMCP resident executor is not installed.",
+        "_mcp_resident_missing": True,
+        "tool": _mcp_tool_name,
+        "source_hash": _mcp_tool_source_hash,
+    }})
+except Exception as exc:
+    traceback.print_exc()
+    _mcp_maya_results = json.dumps({{
+        "success": False,
+        "message": "Error: MayaMCP resident executor failed: " + str(exc),
+        "tool": _mcp_tool_name,
+        "source_hash": _mcp_tool_source_hash,
+    }})
+"""
 
 
 def build_cached_tool_call_script(

@@ -5,8 +5,12 @@ from pathlib import Path
 
 from maya_mcp.server import (
     MayaConnection,
+    RESIDENT_EXECUTOR_VERSION,
+    _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS,
     _KNOWN_MAYA_TOOL_CACHE_KEYS,
     build_cached_tool_call_script,
+    build_resident_executor_install_script,
+    build_resident_tool_call_script,
     tool_source_hash,
 )
 
@@ -52,6 +56,34 @@ def test_cached_tool_script_can_omit_source_on_cache_hit() -> None:
     assert "_mcp_tool_source_b64 = ''" in script
 
 
+def test_resident_executor_install_script_declares_version_and_entrypoint() -> None:
+    script = build_resident_executor_install_script()
+
+    assert RESIDENT_EXECUTOR_VERSION in script
+    assert "def _mcp_call_resident_tool" in script
+    assert "def _mcp_register_tool" in script
+    assert "SceneOpened" in script
+    assert "NewSceneOpened" in script
+    assert "resident_executor" in script
+
+
+def test_resident_tool_call_script_is_lightweight_without_source() -> None:
+    source_hash = tool_source_hash(TOOL_SOURCE)
+    script = build_resident_tool_call_script(
+        "sample_tool",
+        TOOL_SOURCE,
+        source_hash,
+        {"value": 7},
+        include_source=False,
+    )
+
+    encoded_source = base64.b64encode(TOOL_SOURCE.encode("utf-8")).decode("ascii")
+    assert "_mcp_call_resident_tool" in script
+    assert "_mcp_resident_missing" in script
+    assert encoded_source not in script
+    assert "def sample_tool(value" not in script
+
+
 def test_call_tool_can_disable_cache(monkeypatch, tmp_path: Path) -> None:
     tool_path = tmp_path / "sample_tool.py"
     tool_path.write_text(TOOL_SOURCE, encoding="utf-8")
@@ -59,6 +91,8 @@ def test_call_tool_can_disable_cache(monkeypatch, tmp_path: Path) -> None:
 
     def fake_run(self, python_script):
         sent_scripts.append(python_script)
+        if "resident_executor" in python_script:
+            return {"success": True, "version": RESIDENT_EXECUTOR_VERSION}
         return {"success": True}
 
     monkeypatch.setenv("MAYA_MCP_DISABLE_TOOL_CACHE", "1")
@@ -79,9 +113,12 @@ def test_call_tool_reuses_lightweight_cached_call(monkeypatch, tmp_path: Path) -
 
     def fake_run(self, python_script):
         sent_scripts.append(python_script)
+        if "resident_executor" in python_script:
+            return {"success": True, "version": RESIDENT_EXECUTOR_VERSION}
         return {"success": True}
 
     _KNOWN_MAYA_TOOL_CACHE_KEYS.clear()
+    _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.clear()
     monkeypatch.delenv("MAYA_MCP_DISABLE_TOOL_CACHE", raising=False)
     monkeypatch.setattr(MayaConnection, "run_python_script", fake_run)
 
@@ -92,9 +129,10 @@ def test_call_tool_reuses_lightweight_cached_call(monkeypatch, tmp_path: Path) -
     encoded_source = base64.b64encode(TOOL_SOURCE.encode("utf-8")).decode("ascii")
     assert first == {"success": True}
     assert second == {"success": True}
-    assert encoded_source in sent_scripts[0]
-    assert encoded_source not in sent_scripts[1]
-    assert "_mcp_tool_source_b64 = ''" in sent_scripts[1]
+    assert "resident_executor" in sent_scripts[0]
+    assert encoded_source in sent_scripts[1]
+    assert encoded_source not in sent_scripts[2]
+    assert "_mcp_tool_source_b64 = ''" in sent_scripts[2]
 
 
 def test_call_tool_reregisters_when_maya_cache_is_missing(monkeypatch, tmp_path: Path) -> None:
@@ -104,11 +142,14 @@ def test_call_tool_reregisters_when_maya_cache_is_missing(monkeypatch, tmp_path:
 
     def fake_run(self, python_script):
         sent_scripts.append(python_script)
-        if len(sent_scripts) == 2:
+        if "resident_executor" in python_script:
+            return {"success": True, "version": RESIDENT_EXECUTOR_VERSION}
+        if len(sent_scripts) == 3:
             return {"success": False, "_mcp_cache_miss": True}
         return {"success": True}
 
     _KNOWN_MAYA_TOOL_CACHE_KEYS.clear()
+    _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.clear()
     monkeypatch.delenv("MAYA_MCP_DISABLE_TOOL_CACHE", raising=False)
     monkeypatch.setattr(MayaConnection, "run_python_script", fake_run)
 
@@ -119,6 +160,7 @@ def test_call_tool_reregisters_when_maya_cache_is_missing(monkeypatch, tmp_path:
     encoded_source = base64.b64encode(TOOL_SOURCE.encode("utf-8")).decode("ascii")
     assert first == {"success": True}
     assert second == {"success": True}
-    assert encoded_source in sent_scripts[0]
-    assert encoded_source not in sent_scripts[1]
-    assert encoded_source in sent_scripts[2]
+    assert "resident_executor" in sent_scripts[0]
+    assert encoded_source in sent_scripts[1]
+    assert encoded_source not in sent_scripts[2]
+    assert encoded_source in sent_scripts[3]
