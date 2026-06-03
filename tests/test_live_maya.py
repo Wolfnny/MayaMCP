@@ -226,6 +226,87 @@ _mcp_maya_results = json.dumps({"success": True})
         connection.run_python_script(cleanup_script)
 
 
+def test_live_playblast_object_silhouette_preserves_clean_scene_modified_flag(tmp_path: Path) -> None:
+    _requires_live_maya()
+    connection = MayaConnection()
+    state_script = r'''
+import json
+import maya.cmds as cmds
+_mcp_maya_results = json.dumps({
+    "scene": cmds.file(query=True, sceneName=True) or "",
+    "modified": bool(cmds.file(query=True, modified=True)),
+})
+'''
+    state = connection.run_python_script(state_script)
+    if state.get("modified"):
+        pytest.skip("Current Maya scene has unsaved changes; live test will not replace it.")
+    original_scene = state.get("scene") or ""
+    setup_script = r'''
+import json
+import maya.cmds as cmds
+cmds.file(new=True, force=True)
+mesh = cmds.polyCube(name="mcp_silhouette_live_tmp", width=1.0, height=2.0, depth=0.75)[0]
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({
+    "success": True,
+    "mesh": mesh,
+    "modified": bool(cmds.file(query=True, modified=True)),
+})
+'''
+    query_modified_script = r'''
+import json
+import maya.cmds as cmds
+_mcp_maya_results = json.dumps({
+    "modified": bool(cmds.file(query=True, modified=True)),
+    "selection": cmds.ls(selection=True, flatten=True) or [],
+})
+'''
+    tool_path = Path(get_tools_directory()) / "scene" / "playblast_object_silhouette.py"
+    output_path = tmp_path / "mcp_silhouette_live_tmp.png"
+    try:
+        setup = connection.run_python_script(setup_script)
+        assert setup["success"] is True
+        assert setup["modified"] is False
+
+        result = connection.call_tool(
+            "playblast_object_silhouette",
+            str(tool_path),
+            {
+                "name": "mcp_silhouette_live_tmp",
+                "target_objects": [setup["mesh"]],
+                "output_path": str(output_path),
+                "view_direction": [0.0, 0.0, -1.0],
+                "up_axis": [0.0, 1.0, 0.0],
+                "image_width": 128,
+                "image_height": 192,
+                "padding_fraction": 0.08,
+            },
+        )
+        after = connection.run_python_script(query_modified_script)
+
+        assert result["success"] is True
+        assert Path(result["output_path"]).exists()
+        assert after["modified"] is False
+    finally:
+        if original_scene:
+            cleanup_script = f'''
+import json
+import maya.cmds as cmds
+cmds.file({original_scene!r}, open=True, force=True)
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({{"success": True}})
+'''
+        else:
+            cleanup_script = r'''
+import json
+import maya.cmds as cmds
+cmds.file(new=True, force=True)
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({"success": True})
+'''
+        connection.run_python_script(cleanup_script)
+
+
 def test_live_split_mesh_edges_places_ratio_vertex() -> None:
     _requires_live_maya()
     connection = MayaConnection()

@@ -277,6 +277,7 @@ def playblast_object_silhouette(
         clean_orthographic_width = None
 
     targets = _normalize_targets(target_objects)
+    original_modified = bool(cmds.file(query=True, modified=True))
     original_selection = cmds.ls(selection=True, long=True) or []
     original_background = {}
     for color_name in ["background", "backgroundTop", "backgroundBottom"]:
@@ -416,6 +417,11 @@ def playblast_object_silhouette(
                 cmds.select(clear=True)
         except Exception:
             pass
+        if not original_modified:
+            try:
+                cmds.file(modified=False)
+            except Exception:
+                pass
 
     return {
         "success": True,
