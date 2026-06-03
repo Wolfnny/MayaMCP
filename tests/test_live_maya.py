@@ -381,6 +381,46 @@ _mcp_maya_results = json.dumps({"success": True, "mesh": mesh})
         assert row["right_side_error_world"] < 0.0
         assert row["suggested_left_side_correction_vector_world"][0] < 0.0
         assert row["suggested_right_side_correction_vector_world"][0] > 0.0
+
+        object_report = row["object_reports"][0]
+        assert object_report["left_side_edge_vertex_count"] > 0
+        assert object_report["right_side_edge_vertex_count"] > 0
+        assert object_report["left_side_edge_vertex_components"]
+        assert object_report["right_side_edge_vertex_components"]
+        assert all(".vtx[" in item for item in object_report["left_side_edge_vertex_components"])
+
+        selected_result = connection.call_tool(
+            "map_silhouette_errors_to_components",
+            str(tool_path),
+            {
+                "target_objects": [setup["mesh"]],
+                "row_width_samples": [
+                    {
+                        "row_normalized": 0.5,
+                        "signed_error": 0.01171875,
+                        "abs_error": 0.01171875,
+                    }
+                ],
+                "candidate_canvas_bbox_pixels": [0, 0, 255, 511],
+                "candidate_crop_bbox_pixels": [0, 0, 127, 191],
+                "candidate_foreground_bbox_pixels": [0, 0, 127, 191],
+                "view_direction": [0.0, 0.0, -1.0],
+                "up_axis": [0.0, 1.0, 0.0],
+                "camera_center": [0.0, 0.0, 0.0],
+                "orthographic_width": 4.0,
+                "image_width": 128,
+                "image_height": 192,
+                "compare_width": 256,
+                "compare_height": 512,
+                "min_abs_error": 0.001,
+                "max_rows": 1,
+                "row_band_pixels": 8.0,
+                "selection_scope": "side_edge_vertices",
+                "select_components": True,
+            },
+        )
+        assert selected_result["selected_component_count"] > 0
+        assert all(".vtx[" in item for item in selected_result["selected_components"])
     finally:
         if original_scene:
             cleanup_script = f'''

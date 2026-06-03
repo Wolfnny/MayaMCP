@@ -47,10 +47,12 @@ def map_silhouette_errors_to_components(
     Set side_component_band_world to return left/right side component groups
     within a projected world-space distance from each silhouette side, or set
     selection_scope="side" to select those side groups for artist-style local
-    silhouette edits. Each mapped row also reports suggested world-space move
-    vectors for symmetric width edits and, when the row samples include
-    left/right side errors, side-specific correction vectors for asymmetric
-    silhouette edits.
+    silhouette edits. Set selection_scope="side_edge_vertices" to select the
+    deduplicated endpoint vertices of the side crossing edges when the sampled
+    row cuts through edges rather than landing on vertices. Each mapped row also
+    reports suggested world-space move vectors for symmetric width edits and,
+    when the row samples include left/right side errors, side-specific
+    correction vectors for asymmetric silhouette edits.
     """
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
@@ -252,6 +254,24 @@ def map_silhouette_errors_to_components(
             return [], bool(records)
         return records[:limit], len(records) > limit
 
+    def _side_record_groups(records):
+        if clean_side_component_band_world is None or not records:
+            return [], []
+        min_screen_x = min(item["screen_x"] for item in records)
+        max_screen_x = max(item["screen_x"] for item in records)
+        left_records = [
+            item for item in records
+            if item["screen_x"] <= min_screen_x + clean_side_component_band_world
+        ]
+        right_records = [
+            item for item in records
+            if item["screen_x"] >= max_screen_x - clean_side_component_band_world
+        ]
+        return (
+            sorted(left_records, key=lambda item: item["index"]),
+            sorted(right_records, key=lambda item: item["index"]),
+        )
+
     def _side_component_records(records):
         if clean_side_component_band_world is None or not records:
             return {
@@ -264,23 +284,12 @@ def map_silhouette_errors_to_components(
                 "left_selection": [],
                 "right_selection": [],
             }
-        min_screen_x = min(item["screen_x"] for item in records)
-        max_screen_x = max(item["screen_x"] for item in records)
-        left_records = [
-            item for item in records
-            if item["screen_x"] <= min_screen_x + clean_side_component_band_world
-        ]
-        right_records = [
-            item for item in records
-            if item["screen_x"] >= max_screen_x - clean_side_component_band_world
-        ]
-        ordered_left = sorted(left_records, key=lambda item: item["index"])
-        ordered_right = sorted(right_records, key=lambda item: item["index"])
+        ordered_left, ordered_right = _side_record_groups(records)
         left_details, left_truncated = _truncate_records(ordered_left, clean_max_components_per_row_object)
         right_details, right_truncated = _truncate_records(ordered_right, clean_max_components_per_row_object)
         return {
-            "left_count": len(left_records),
-            "right_count": len(right_records),
+            "left_count": len(ordered_left),
+            "right_count": len(ordered_right),
             "left_records": left_details if clean_component_detail == "all" else [],
             "right_records": right_details if clean_component_detail == "all" else [],
             "left_truncated": left_truncated if clean_component_detail == "all" else False,
@@ -410,13 +419,54 @@ def map_silhouette_errors_to_components(
                 "right_side_edges": [],
                 "left_side_edges_truncated": False,
                 "right_side_edges_truncated": False,
+                "left_side_edge_vertex_count": 0,
+                "right_side_edge_vertex_count": 0,
+                "left_side_edge_vertex_components": [],
+                "right_side_edge_vertex_components": [],
+                "left_side_edge_vertices": [],
+                "right_side_edge_vertices": [],
+                "left_side_edge_vertices_truncated": False,
+                "right_side_edge_vertices_truncated": False,
                 "_selection_edges": [],
                 "_selection_side_edges": [],
+                "_selection_side_edge_vertices": [],
             }
+
+        def _endpoint_vertex_records(edge_records):
+            vertex_records = {}
+            for edge_record in edge_records:
+                for vertex_id in edge_record["vertices"]:
+                    point = points[vertex_id]
+                    vector = om.MVector(point.x, point.y, point.z)
+                    record = vertex_records.setdefault(
+                        vertex_id,
+                        {
+                            "index": int(vertex_id),
+                            "component": f"{prefix}.vtx[{vertex_id}]",
+                            "position": [float(point.x), float(point.y), float(point.z)],
+                            "screen_x": float(vector * right_axis),
+                            "screen_y": float(vector * up_vector),
+                            "source_edges": [],
+                        },
+                    )
+                    record["source_edges"].append(int(edge_record["index"]))
+            return sorted(vertex_records.values(), key=lambda item: item["index"])
+
         left_edges = sorted(records, key=lambda item: (item["screen_x"], item["index"]))[:clean_extreme_count]
         right_edges = sorted(records, key=lambda item: (-item["screen_x"], item["index"]))[:clean_extreme_count]
         ordered_records = sorted(records, key=lambda item: item["index"])
         detailed_records, records_truncated = _truncate_records(ordered_records, clean_max_components_per_row_object)
+        left_side_edge_records, right_side_edge_records = _side_record_groups(records)
+        left_side_edge_vertices = _endpoint_vertex_records(left_side_edge_records)
+        right_side_edge_vertices = _endpoint_vertex_records(right_side_edge_records)
+        left_side_edge_vertex_details, left_side_edge_vertices_truncated = _truncate_records(
+            left_side_edge_vertices,
+            clean_max_components_per_row_object,
+        )
+        right_side_edge_vertex_details, right_side_edge_vertices_truncated = _truncate_records(
+            right_side_edge_vertices,
+            clean_max_components_per_row_object,
+        )
         side_records = _side_component_records(records)
         return {
             "crossing_edge_count": len(records),
@@ -430,8 +480,20 @@ def map_silhouette_errors_to_components(
             "right_side_edges": side_records["right_records"],
             "left_side_edges_truncated": side_records["left_truncated"],
             "right_side_edges_truncated": side_records["right_truncated"],
+            "left_side_edge_vertex_count": len(left_side_edge_vertices),
+            "right_side_edge_vertex_count": len(right_side_edge_vertices),
+            "left_side_edge_vertex_components": [item["component"] for item in left_side_edge_vertex_details],
+            "right_side_edge_vertex_components": [item["component"] for item in right_side_edge_vertex_details],
+            "left_side_edge_vertices": left_side_edge_vertex_details if clean_component_detail == "all" else [],
+            "right_side_edge_vertices": right_side_edge_vertex_details if clean_component_detail == "all" else [],
+            "left_side_edge_vertices_truncated": left_side_edge_vertices_truncated,
+            "right_side_edge_vertices_truncated": right_side_edge_vertices_truncated,
             "_selection_edges": [item["component"] for item in detailed_records],
             "_selection_side_edges": side_records["left_selection"] + side_records["right_selection"],
+            "_selection_side_edge_vertices": (
+                [item["component"] for item in left_side_edge_vertex_details]
+                + [item["component"] for item in right_side_edge_vertex_details]
+            ),
         }
 
     if not target_objects or not isinstance(target_objects, list) or not all(isinstance(item, str) for item in target_objects):
@@ -457,8 +519,8 @@ def map_silhouette_errors_to_components(
     if clean_component_detail not in {"extremes", "all"}:
         raise ValueError("component_detail must be extremes or all.")
     clean_selection_scope = (selection_scope or "").lower().strip()
-    if clean_selection_scope not in {"extremes", "all", "side"}:
-        raise ValueError("selection_scope must be extremes, all, or side.")
+    if clean_selection_scope not in {"extremes", "all", "side", "side_edge_vertices"}:
+        raise ValueError("selection_scope must be extremes, all, side, or side_edge_vertices.")
     clean_max_components_per_row_object = _validate_int(max_components_per_row_object, "max_components_per_row_object", 0)
     requested_side_component_band_world = None
     if side_component_band_world is not None:
@@ -532,7 +594,7 @@ def map_silhouette_errors_to_components(
     world_units_per_image_pixel = resolved_orthographic_width / float(max(1, clean_image_width - 1))
     band_world = max(0.0, clean_row_band_pixels) * world_units_per_image_pixel
     clean_side_component_band_world = requested_side_component_band_world
-    if clean_side_component_band_world is None and clean_selection_scope == "side":
+    if clean_side_component_band_world is None and clean_selection_scope in {"side", "side_edge_vertices"}:
         clean_side_component_band_world = band_world
     mapped_rows = []
     selected_components = []
@@ -580,6 +642,8 @@ def map_silhouette_errors_to_components(
             elif clean_selection_scope == "side":
                 selected_components.extend(report["_selection_side_vertices"])
                 selected_components.extend(edge_report["_selection_side_edges"])
+            elif clean_selection_scope == "side_edge_vertices":
+                selected_components.extend(edge_report["_selection_side_edge_vertices"])
             else:
                 selected_components.extend(item["component"] for item in report["left"])
                 selected_components.extend(item["component"] for item in report["right"])
@@ -589,6 +653,7 @@ def map_silhouette_errors_to_components(
             report.pop("_selection_side_vertices", None)
             edge_report.pop("_selection_edges", None)
             edge_report.pop("_selection_side_edges", None)
+            edge_report.pop("_selection_side_edge_vertices", None)
             object_reports.append({
                 "object_name": shape_info["object_name"],
                 "shape_name": shape_info["shape_name"],
