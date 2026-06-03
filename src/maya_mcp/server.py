@@ -307,7 +307,7 @@ try:
     _mcp_tool_registry = globals().setdefault("_mcp_tool_registry", {})
     _mcp_tool_cache_stats = globals().setdefault(
         "_mcp_tool_cache_stats",
-        {"loads": 0, "hits": 0, "misses": 0, "errors": 0},
+        {"loads": 0, "hits": 0, "misses": 0, "errors": 0, "scene_invalidations": 0},
     )
     _mcp_tool_registry["__probe__"] = {"tool_name": "__probe__", "source_hash": "probe"}
     del _mcp_tool_registry["__probe__"]
@@ -542,8 +542,65 @@ _mcp_tool_args = json.loads({arguments_json!r})
 _mcp_tool_registry = globals().setdefault("_mcp_tool_registry", {{}})
 _mcp_tool_cache_stats = globals().setdefault(
     "_mcp_tool_cache_stats",
-    {{"loads": 0, "hits": 0, "misses": 0, "errors": 0}},
+    {{"loads": 0, "hits": 0, "misses": 0, "errors": 0, "scene_invalidations": 0}},
 )
+
+def _mcp_invalidate_tool_cache_for_scene_change(*args):
+    registry = globals().setdefault("_mcp_tool_registry", {{}})
+    registry.clear()
+    stats = globals().setdefault(
+        "_mcp_tool_cache_stats",
+        {{"loads": 0, "hits": 0, "misses": 0, "errors": 0, "scene_invalidations": 0}},
+    )
+    stats["scene_invalidations"] = stats.get("scene_invalidations", 0) + 1
+
+def _mcp_ensure_scene_cache_invalidation_jobs():
+    callbacks = globals().get("_mcp_tool_cache_scene_callbacks")
+    if not callbacks:
+        try:
+            import maya.api.OpenMaya as om
+
+            callback_ids = []
+            for message in (
+                om.MSceneMessage.kBeforeOpen,
+                om.MSceneMessage.kAfterOpen,
+                om.MSceneMessage.kBeforeNew,
+                om.MSceneMessage.kAfterNew,
+            ):
+                try:
+                    callback_ids.append(
+                        om.MSceneMessage.addCallback(
+                            message,
+                            _mcp_invalidate_tool_cache_for_scene_change,
+                        )
+                    )
+                except Exception:
+                    pass
+            globals()["_mcp_tool_cache_scene_callbacks"] = callback_ids
+        except Exception:
+            globals()["_mcp_tool_cache_scene_callbacks"] = []
+
+    jobs = globals().get("_mcp_tool_cache_scene_jobs")
+    if jobs:
+        return
+    try:
+        import maya.cmds as cmds
+    except Exception:
+        globals()["_mcp_tool_cache_scene_jobs"] = []
+        return
+    created_jobs = []
+    for event_name in ("SceneOpened", "NewSceneOpened"):
+        try:
+            job_id = cmds.scriptJob(
+                event=[event_name, _mcp_invalidate_tool_cache_for_scene_change],
+                protected=True,
+            )
+            created_jobs.append(job_id)
+        except Exception:
+            pass
+    globals()["_mcp_tool_cache_scene_jobs"] = created_jobs
+
+_mcp_ensure_scene_cache_invalidation_jobs()
 
 def _mcp_tool_cache_key(tool_name, source_hash):
     return tool_name + ":" + source_hash

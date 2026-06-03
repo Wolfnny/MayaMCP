@@ -157,6 +157,75 @@ def cache_probe_tool(value: int = 1) -> Dict[str, Any]:
     assert second_cache["stats"]["loads"] > first_cache["stats"]["loads"]
 
 
+def test_live_tool_cache_invalidates_when_scene_opens(tmp_path: Path) -> None:
+    _requires_live_maya()
+    connection = MayaConnection()
+    state_script = r'''
+import json
+import maya.cmds as cmds
+_mcp_maya_results = json.dumps({
+    "scene": cmds.file(query=True, sceneName=True) or "",
+    "modified": bool(cmds.file(query=True, modified=True)),
+})
+'''
+    state = connection.run_python_script(state_script)
+    if state.get("modified"):
+        pytest.skip("Current Maya scene has unsaved changes; live test will not replace it.")
+    original_scene = state.get("scene") or ""
+    tool_path = tmp_path / "scene_cache_probe_tool.py"
+    tool_path.write_text(
+        '''from typing import Any, Dict
+
+
+def scene_cache_probe_tool(value: int = 1) -> Dict[str, Any]:
+    """Return a cache scene invalidation probe result."""
+    return {"success": True, "value": value}
+''',
+        encoding="utf-8",
+    )
+    try:
+        first = connection.call_tool("scene_cache_probe_tool", str(tool_path), {"value": 7})
+        before_open_cache = connection.run_cache_probe()
+        open_script = r'''
+import json
+import maya.cmds as cmds
+cmds.file(new=True, force=True)
+_mcp_maya_results = json.dumps({"success": True})
+'''
+        opened = connection.run_python_script(open_script)
+        assert opened["success"] is True
+        after_open_cache = connection.run_cache_probe()
+        second = connection.call_tool("scene_cache_probe_tool", str(tool_path), {"value": 9})
+        after_second_cache = connection.run_cache_probe()
+
+        assert first["value"] == 7
+        assert second["value"] == 9
+        assert after_open_cache["stats"]["scene_invalidations"] > before_open_cache["stats"].get(
+            "scene_invalidations",
+            0,
+        )
+        assert after_second_cache["stats"]["loads"] > after_open_cache["stats"]["loads"]
+        assert after_second_cache["stats"]["misses"] > after_open_cache["stats"]["misses"]
+    finally:
+        if original_scene:
+            cleanup_script = f'''
+import json
+import maya.cmds as cmds
+cmds.file({original_scene!r}, open=True, force=True)
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({{"success": True}})
+'''
+        else:
+            cleanup_script = r'''
+import json
+import maya.cmds as cmds
+cmds.file(new=True, force=True)
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({"success": True})
+'''
+        connection.run_python_script(cleanup_script)
+
+
 def test_live_split_mesh_edges_places_ratio_vertex() -> None:
     _requires_live_maya()
     connection = MayaConnection()

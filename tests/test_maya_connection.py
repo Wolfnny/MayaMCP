@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from maya_mcp.server import MayaConnection
+from maya_mcp.server import MayaConnection, build_cached_tool_call_script
 
 
 def test_connection_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,3 +99,22 @@ def test_connection_failure_mentions_effective_configuration() -> None:
     assert "port=1" in message
     assert "source_type=mel" in message
     assert "commandPort" in message
+
+
+def test_cached_tool_script_invalidates_cache_on_scene_open() -> None:
+    script = build_cached_tool_call_script(
+        tool_name="probe_tool",
+        source="def probe_tool():\n    return {'success': True}\n",
+        source_hash="abc123",
+        arguments={},
+        include_source=True,
+    )
+
+    assert "SceneOpened" in script
+    assert "NewSceneOpened" in script
+    assert "MSceneMessage" in script
+    assert "kBeforeOpen" in script
+    assert "kAfterOpen" in script
+    assert "_mcp_invalidate_tool_cache_for_scene_change" in script
+    assert "_mcp_tool_registry" in script
+    assert "scene_invalidations" in script
