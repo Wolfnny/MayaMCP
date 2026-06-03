@@ -5,7 +5,12 @@ import re
 
 import pytest
 
-from maya_mcp.server import MayaConnection, build_cached_tool_call_script
+from maya_mcp.server import (
+    MayaConnection,
+    RESIDENT_EXECUTOR_VERSION,
+    _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS,
+    build_cached_tool_call_script,
+)
 
 
 def test_connection_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,3 +123,36 @@ def test_cached_tool_script_invalidates_cache_on_scene_open() -> None:
     assert "_mcp_invalidate_tool_cache_for_scene_change" in script
     assert "_mcp_tool_registry" in script
     assert "scene_invalidations" in script
+
+
+def test_resident_probe_reinstalls_when_entrypoint_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = MayaConnection(host="127.0.0.1", port=50007, source_type="mel")
+    _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.clear()
+    calls = []
+
+    def fake_run(python_script):
+        calls.append(python_script)
+        if "def _mcp_call_resident_tool" in python_script:
+            return {"success": True, "version": RESIDENT_EXECUTOR_VERSION}
+        if len([call for call in calls if "def _mcp_call_resident_tool" not in call]) == 1:
+            return {
+                "success": False,
+                "resident_executor": False,
+                "version": None,
+                "expected_version": RESIDENT_EXECUTOR_VERSION,
+            }
+        return {
+            "success": True,
+            "resident_executor": True,
+            "version": RESIDENT_EXECUTOR_VERSION,
+            "expected_version": RESIDENT_EXECUTOR_VERSION,
+        }
+
+    monkeypatch.setattr(connection, "run_python_script", fake_run)
+
+    result = connection.run_resident_probe()
+
+    install_calls = [call for call in calls if "def _mcp_call_resident_tool" in call]
+    assert result["success"] is True
+    assert result["version"] == RESIDENT_EXECUTOR_VERSION
+    assert len(install_calls) == 2

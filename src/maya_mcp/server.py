@@ -331,6 +331,42 @@ finally:
         _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.add(key)
         return result
 
+    def run_resident_probe(self) -> Dict[str, Any]:
+        """Probe whether the resident executor is installed and callable in Maya."""
+        key = (self.host, self.port, self.source_type, RESIDENT_EXECUTOR_VERSION)
+
+        def _probe() -> Dict[str, Any]:
+            script = f"""
+import json
+version = globals().get("_mcp_resident_executor_version")
+entrypoint = globals().get("_mcp_call_resident_tool")
+registry = globals().get("_mcp_tool_registry", {{}})
+stats = globals().get("_mcp_tool_cache_stats", {{}})
+_mcp_maya_results = json.dumps({{
+    "success": bool(callable(entrypoint) and version == {RESIDENT_EXECUTOR_VERSION!r}),
+    "resident_executor": bool(callable(entrypoint)),
+    "version": version,
+    "expected_version": {RESIDENT_EXECUTOR_VERSION!r},
+    "registry_size": len(registry),
+    "stats": dict(stats),
+}})
+"""
+            result = self.run_python_script(script)
+            if isinstance(result, dict):
+                return result
+            return {"success": False, "message": str(result)}
+
+        try:
+            self.ensure_resident_executor()
+            result = _probe()
+            if result.get("success"):
+                return result
+            _KNOWN_MAYA_RESIDENT_EXECUTOR_KEYS.discard(key)
+            self.ensure_resident_executor()
+            return _probe()
+        except Exception as exc:
+            return {"success": False, "message": str(exc), "expected_version": RESIDENT_EXECUTOR_VERSION}
+
     def run_cache_probe(self) -> Dict[str, Any]:
         """Probe whether the Maya-side cache registry is writable."""
         try:

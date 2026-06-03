@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from maya_mcp.cli import _print_doctor_human
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,3 +106,33 @@ def test_doctor_json_reports_invalid_connection_config() -> None:
     assert payload["success"] is False
     assert payload["connection"]["success"] is False
     assert "mel or python" in payload["connection"]["message"]
+
+
+def test_doctor_human_reports_resident_executor(capsys) -> None:
+    _print_doctor_human(
+        {
+            "python": {"version": "3.14.2", "success": True},
+            "tools": {"discovered_count": 106, "contract_issue_count": 0},
+            "connection": {
+                "host": "127.0.0.1",
+                "port": 50009,
+                "source_type": "python",
+                "matching_command_port_mel": 'commandPort -name ":50009";',
+                "recommended_python_command_port_mel": 'commandPort -name ":50009";',
+            },
+            "artifacts": {"artifact_directory": ".maya_mcp_artifacts", "log_path": "maya_mcp_server.log"},
+            "live": {
+                "requested": True,
+                "success": True,
+                "command_port_executable": True,
+                "resident_executor": True,
+                "resident_version": "unit-test-version",
+                "cache_writable": True,
+                "effective_source_type": "python",
+                "recommended_source_type": "python",
+            },
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "Live resident executor: ok (unit-test-version)" in output

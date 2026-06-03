@@ -139,19 +139,33 @@ def build_doctor_report(live: bool = False) -> Dict[str, Any]:
             return report
         try:
             live_probe = connection.run_live_probe()
+            resident_probe = connection.run_resident_probe()
             cache_probe = connection.run_cache_probe()
             report["live"] = {
                 "requested": True,
-                "success": bool(live_probe.get("success") and cache_probe.get("success")),
+                "success": bool(
+                    live_probe.get("success")
+                    and resident_probe.get("success")
+                    and cache_probe.get("success")
+                ),
                 "skipped": False,
                 "probe": live_probe,
+                "resident_probe": resident_probe,
                 "cache_probe": cache_probe,
                 "command_port_executable": bool(live_probe.get("success")),
+                "resident_executor": bool(resident_probe.get("success")),
+                "resident_version": resident_probe.get("version"),
+                "resident_expected_version": resident_probe.get("expected_version"),
                 "cache_writable": bool(cache_probe.get("success") and cache_probe.get("cache_writable")),
                 "effective_source_type": connection.source_type,
                 "recommended_source_type": "python",
             }
-            report["success"] = bool(report["success"] and live_probe.get("success") and cache_probe.get("success"))
+            report["success"] = bool(
+                report["success"]
+                and live_probe.get("success")
+                and resident_probe.get("success")
+                and cache_probe.get("success")
+            )
         except Exception as exc:
             report["live"] = {
                 "requested": True,
@@ -186,6 +200,12 @@ def _print_doctor_human(report: Dict[str, Any]) -> None:
             "  Live commandPort executable: "
             f"{'ok' if report['live'].get('command_port_executable') else 'fail'}"
         )
+        resident_status = "ok" if report["live"].get("resident_executor") else "fail"
+        resident_version = report["live"].get("resident_version")
+        if resident_version:
+            print(f"  Live resident executor: {resident_status} ({resident_version})")
+        else:
+            print(f"  Live resident executor: {resident_status}")
         print(f"  Live cache writable: {'ok' if report['live'].get('cache_writable') else 'fail'}")
         print(
             "  Effective source type: "
