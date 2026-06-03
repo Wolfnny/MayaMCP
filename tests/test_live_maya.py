@@ -307,6 +307,100 @@ _mcp_maya_results = json.dumps({"success": True})
         connection.run_python_script(cleanup_script)
 
 
+def test_live_map_silhouette_errors_reports_asymmetric_side_corrections() -> None:
+    _requires_live_maya()
+    connection = MayaConnection()
+    state_script = r'''
+import json
+import maya.cmds as cmds
+_mcp_maya_results = json.dumps({
+    "scene": cmds.file(query=True, sceneName=True) or "",
+    "modified": bool(cmds.file(query=True, modified=True)),
+})
+'''
+    state = connection.run_python_script(state_script)
+    if state.get("modified"):
+        pytest.skip("Current Maya scene has unsaved changes; live test will not replace it.")
+    original_scene = state.get("scene") or ""
+    setup_script = r'''
+import json
+import maya.cmds as cmds
+cmds.file(new=True, force=True)
+mesh = cmds.polyCube(name="mcp_map_silhouette_live_tmp", width=1.0, height=1.0, depth=1.0)[0]
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({"success": True, "mesh": mesh})
+'''
+    tool_path = Path(get_tools_directory()) / "scene" / "map_silhouette_errors_to_components.py"
+    try:
+        setup = connection.run_python_script(setup_script)
+        assert setup["success"] is True
+
+        result = connection.call_tool(
+            "map_silhouette_errors_to_components",
+            str(tool_path),
+            {
+                "target_objects": [setup["mesh"]],
+                "row_width_samples": [
+                    {
+                        "row_normalized": 0.5,
+                        "reference_width": 0.5,
+                        "candidate_width": 0.51171875,
+                        "signed_error": 0.01171875,
+                        "abs_error": 0.01171875,
+                        "left_error_pixels": 2,
+                        "right_error_pixels": -1,
+                        "center_error_pixels": 0.5,
+                    }
+                ],
+                "candidate_canvas_bbox_pixels": [0, 0, 255, 511],
+                "candidate_crop_bbox_pixels": [0, 0, 127, 191],
+                "candidate_foreground_bbox_pixels": [0, 0, 127, 191],
+                "view_direction": [0.0, 0.0, -1.0],
+                "up_axis": [0.0, 1.0, 0.0],
+                "camera_center": [0.0, 0.0, 0.0],
+                "orthographic_width": 4.0,
+                "image_width": 128,
+                "image_height": 192,
+                "compare_width": 256,
+                "compare_height": 512,
+                "min_abs_error": 0.001,
+                "max_rows": 1,
+                "row_band_pixels": 8.0,
+                "component_detail": "all",
+                "side_component_band_world": 0.25,
+                "select_components": False,
+            },
+        )
+
+        assert result["success"] is True
+        assert result["mapped_row_count"] == 1
+        row = result["rows"][0]
+        assert row["left_error_pixels"] == pytest.approx(2.0)
+        assert row["right_error_pixels"] == pytest.approx(-1.0)
+        assert row["left_side_error_world"] > 0.0
+        assert row["right_side_error_world"] < 0.0
+        assert row["suggested_left_side_correction_vector_world"][0] < 0.0
+        assert row["suggested_right_side_correction_vector_world"][0] > 0.0
+    finally:
+        if original_scene:
+            cleanup_script = f'''
+import json
+import maya.cmds as cmds
+cmds.file({original_scene!r}, open=True, force=True)
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({{"success": True}})
+'''
+        else:
+            cleanup_script = r'''
+import json
+import maya.cmds as cmds
+cmds.file(new=True, force=True)
+cmds.file(modified=False)
+_mcp_maya_results = json.dumps({"success": True})
+'''
+        connection.run_python_script(cleanup_script)
+
+
 def test_live_split_mesh_edges_places_ratio_vertex() -> None:
     _requires_live_maya()
     connection = MayaConnection()

@@ -48,8 +48,9 @@ def map_silhouette_errors_to_components(
     within a projected world-space distance from each silhouette side, or set
     selection_scope="side" to select those side groups for artist-style local
     silhouette edits. Each mapped row also reports suggested world-space move
-    vectors for the min-screen-x and max-screen-x sides; applying a fraction of
-    those vectors expands or contracts the silhouette width for that row.
+    vectors for symmetric width edits and, when the row samples include
+    left/right side errors, side-specific correction vectors for asymmetric
+    silhouette edits.
     """
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
@@ -196,6 +197,55 @@ def map_silhouette_errors_to_components(
         compare_pixels = signed_error * float(clean_compare_width)
         source_pixels = compare_pixels * source_region_height / canvas_height
         return source_pixels * resolved_orthographic_width / float(max(1, clean_image_width - 1))
+
+    def _world_error_from_compare_pixels(compare_pixels):
+        return _world_width_error(float(compare_pixels) / float(clean_compare_width))
+
+    def _optional_numeric_sample_fields(sample):
+        fields = {}
+        for key in [
+            "left_error_pixels",
+            "right_error_pixels",
+            "center_error_pixels",
+            "left_error_normalized",
+            "right_error_normalized",
+            "center_error_normalized",
+            "reference_left_pixel",
+            "reference_right_pixel",
+            "candidate_left_pixel",
+            "candidate_right_pixel",
+            "reference_left_normalized",
+            "reference_right_normalized",
+            "candidate_left_normalized",
+            "candidate_right_normalized",
+            "reference_center_pixel",
+            "candidate_center_pixel",
+            "reference_center_normalized",
+            "candidate_center_normalized",
+        ]:
+            value = sample.get(key)
+            if value is None:
+                continue
+            try:
+                fields[key] = float(value)
+            except Exception:
+                fields[key] = value
+        return fields
+
+    def _side_correction_fields(row):
+        fields = {}
+        for side in ["left", "right"]:
+            error_pixels = row.get(f"{side}_error_pixels")
+            if error_pixels is None:
+                continue
+            error_world = _world_error_from_compare_pixels(error_pixels)
+            fields[f"{side}_side_error_world"] = float(error_world)
+            fields[f"suggested_{side}_side_correction_vector_world"] = [
+                float(-right_axis.x * error_world),
+                float(-right_axis.y * error_world),
+                float(-right_axis.z * error_world),
+            ]
+        return fields
 
     def _truncate_records(records, limit):
         if limit == 0:
@@ -468,13 +518,15 @@ def map_silhouette_errors_to_components(
         abs_error = abs(float(sample.get("abs_error", abs(signed_error))))
         if abs_error < clean_min_abs_error:
             continue
-        rows.append({
+        row_record = {
             "row_normalized": row_normalized,
             "reference_width": sample.get("reference_width"),
             "candidate_width": sample.get("candidate_width"),
             "signed_error": signed_error,
             "abs_error": abs_error,
-        })
+        }
+        row_record.update(_optional_numeric_sample_fields(sample))
+        rows.append(row_record)
     rows = sorted(rows, key=lambda item: item["abs_error"], reverse=True)[:clean_max_rows]
 
     world_units_per_image_pixel = resolved_orthographic_width / float(max(1, clean_image_width - 1))
@@ -543,7 +595,7 @@ def map_silhouette_errors_to_components(
                 **report,
                 **edge_report,
             })
-        mapped_rows.append({
+        mapped_row = {
             **row,
             "mapped": True,
             "row_canvas_pixel": row_canvas,
@@ -556,7 +608,9 @@ def map_silhouette_errors_to_components(
             "suggested_left_side_move_vector_world": left_side_move_vector,
             "suggested_right_side_move_vector_world": right_side_move_vector,
             "object_reports": object_reports,
-        })
+        }
+        mapped_row.update(_side_correction_fields(row))
+        mapped_rows.append(mapped_row)
 
     unique_selected = list(dict.fromkeys(selected_components))
     if select_components:
